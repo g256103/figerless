@@ -1,11 +1,19 @@
 /**
  * On-screen hand mode (iPad):
- * 1) Keep hand on canvas for 5+ seconds → auto lock hand anchor
+ * 1) Keep hand on canvas for 5+ seconds (gap-tolerant) → lock hand anchor
  * 2) User taps intended virtual pen tip
  * 3) tip = currentAnchor + (tip0 - anchor0)
+ *
+ * Note: pinky-side / knife-edge contact is hard for capacitive + iPadOS palm
+ * rejection. We accumulate contact time with a grace gap, and also listen to
+ * Touch Events as a fallback beside Pointer Events.
  */
 
 export const HOLD_SECONDS_REQUIRED = 5;
+/** Allow brief contact dropouts without wiping progress (ms). */
+export const HOLD_GAP_GRACE_MS = 900;
+/** Treat very recent cancelled/lost touches as soft presence (ms). */
+export const SOFT_PRESENCE_MS = 450;
 
 export function centroid(points) {
   if (!points.length) return null;
@@ -20,19 +28,25 @@ export function centroid(points) {
 
 export function createOnscreenPenController({
   canvas,
+  surface = canvas,
   drawing,
   smoother,
   onStatus,
   onContacts,
   holdSeconds = HOLD_SECONDS_REQUIRED,
+  gapGraceMs = HOLD_GAP_GRACE_MS,
 }) {
   const state = {
     phase: "idle", // idle | placeHand | pickTip | ready | drawing
-    activePointers: new Map(), // pointerId -> {x,y}
-    holdStartedAt: null,
+    activePointers: new Map(), // id -> {x,y,source}
+    holdAccumMs: 0,
     holdProgress: 0,
     holdSamples: [],
-    ignorePointerIds: new Set(), // contacts already down when entering pickTip
+    lastContactAt: 0,
+    lastSoftPresenceAt: 0,
+    lastTickAt: 0,
+    weakContact: false,
+    ignorePointerIds: new Set(),
     calibAnchor: null,
     calibTip: null,
     offset: null,
@@ -49,6 +63,7 @@ export function createOnscreenPenController({
       contacts: currentContacts(),
       holdProgress: state.holdProgress,
       holdSecondsLeft: Math.max(0, holdSeconds * (1 - state.holdProgress)),
+      weakContact: state.weakContact,
     });
   }
 
@@ -60,21 +75,22 @@ export function createOnscreenPenController({
       contacts: currentContacts(),
       holdProgress: state.holdProgress,
       holdSecondsLeft: Math.max(0, holdSeconds * (1 - state.holdProgress)),
+      weakContact: state.weakContact,
     });
   }
 
-  function canvasPointFromEvent(e) {
+  function canvasPointFromClient(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / Math.max(rect.width, 1);
     const scaleY = canvas.height / Math.max(rect.height, 1);
     return {
-      x: (e.clientX - rect.left) * scaleX,
-      y: (e.clientY - rect.top) * scaleY,
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
     };
   }
 
   function currentContacts() {
-    return [...state.activePointers.values()];
+    return [...state.activePointers.values()].map(({ x, y }) => ({ x, y }));
   }
 
   function currentAnchor() {
@@ -91,6 +107,18 @@ export function createOnscreenPenController({
     };
   }
 
+  function hasHardContact() {
+    return state.activePointers.size > 0;
+  }
+
+  function hasSoftPresence(now = performance.now()) {
+    return (
+      hasHardContact() ||
+      now - state.lastSoftPresenceAt <= SOFT_PRESENCE_MS ||
+      now - state.lastContactAt <= gapGraceMs
+    );
+  }
+
   function paintDebug() {
     onContacts?.(
       currentContacts(),
@@ -98,13 +126,21 @@ export function createOnscreenPenController({
       state.calibTip,
       state.calibAnchor,
       state.holdProgress,
+      {
+        weakContact: state.weakContact,
+        softPresence: hasSoftPresence(),
+      },
     );
   }
 
-  function resetHold() {
-    state.holdStartedAt = null;
-    state.holdProgress = 0;
-    state.holdSamples = [];
+  function resetHold({ keepPartial = false } = {}) {
+    if (!keepPartial) {
+      state.holdAccumMs = 0;
+      state.holdProgress = 0;
+      state.holdSamples = [];
+    }
+    state.lastTickAt = 0;
+    state.weakContact = false;
   }
 
   function beginPlaceHand() {
@@ -119,7 +155,7 @@ export function createOnscreenPenController({
     resetHold();
     setPhase(
       "placeHand",
-      `ペン握り形でキャンバスに手を置き、${holdSeconds}秒間そのまま維持してください。`,
+      `手を置いて${holdSeconds}秒維持してください。小指側だけより、手のひらや複数指を軽くつけると反応しやすいです。`,
     );
     paintDebug();
     startHoldLoop();
@@ -133,13 +169,17 @@ export function createOnscreenPenController({
         ? [centroid(currentContacts())]
         : [];
     if (!samples.length) {
-      resetHold();
-      emitStatus("接触が途切れました。もう一度手を置いてください。");
+      // Keep partial progress; ask user to re-seat hand
+      state.weakContact = true;
+      emitStatus(
+        "接触が弱く位置を確定できません。手のひら側もつけて、もう少し押しつけてください。",
+      );
+      state.holdAccumMs = Math.max(0, state.holdAccumMs - 800);
+      state.holdProgress = Math.min(1, state.holdAccumMs / (holdSeconds * 1000));
       return;
     }
 
     state.calibAnchor = centroid(samples.filter(Boolean));
-    // Existing contacts should not instantly count as tip taps.
     state.ignorePointerIds = new Set(state.activePointers.keys());
     resetHold();
     setPhase(
@@ -152,40 +192,55 @@ export function createOnscreenPenController({
   function updateHold(now = performance.now()) {
     if (state.phase !== "placeHand") return;
 
-    const contacts = currentContacts();
-    if (contacts.length === 0) {
-      if (state.holdStartedAt) {
-        resetHold();
-        emitStatus(`手を置いてください。${holdSeconds}秒維持でペン先設定に進みます。`);
-        paintDebug();
+    if (!state.lastTickAt) state.lastTickAt = now;
+    const dt = Math.min(50, Math.max(0, now - state.lastTickAt));
+    state.lastTickAt = now;
+
+    const hard = hasHardContact();
+    const soft = hasSoftPresence(now);
+    const gap = now - state.lastContactAt;
+
+    if (hard) {
+      state.lastContactAt = now;
+      state.weakContact = false;
+      state.holdAccumMs += dt;
+      const c = centroid(currentContacts());
+      if (c) state.holdSamples.push(c);
+      if (state.holdSamples.length > 160) {
+        state.holdSamples.splice(0, state.holdSamples.length - 160);
       }
-      return;
+    } else if (soft && gap <= gapGraceMs) {
+      // Brief dropout: keep progress, mark as weak
+      state.weakContact = true;
+      // Still accumulate at reduced rate so intermittent pinky contact can finish
+      state.holdAccumMs += dt * 0.55;
+    } else if (state.holdAccumMs > 0 && gap > gapGraceMs) {
+      // Long gap: decay slowly instead of hard reset (helps unstable edge contact)
+      state.weakContact = true;
+      state.holdAccumMs = Math.max(0, state.holdAccumMs - dt * 0.35);
+      if (state.holdAccumMs <= 0) {
+        state.holdSamples = [];
+      }
     }
 
-    if (!state.holdStartedAt) {
-      state.holdStartedAt = now;
-      state.holdSamples = [];
+    state.holdProgress = Math.min(1, state.holdAccumMs / (holdSeconds * 1000));
+    const left = Math.max(0, holdSeconds - state.holdAccumMs / 1000);
+
+    let message;
+    if (!hard && state.holdAccumMs <= 0) {
+      message = `手を置いてください。小指側だけだと反応しにくいので、手のひらや指の腹も軽くつけて${holdSeconds}秒維持。`;
+    } else if (state.weakContact && !hard) {
+      message = `接触が弱い/途切れています… 進捗 ${(state.holdProgress * 100).toFixed(0)}%  もう少し押しつけつつ維持`;
+    } else if (left > 0.05) {
+      message = `手を認識中… あと ${left.toFixed(1)} 秒`;
+    } else {
+      message = "手の位置を確定しています…";
     }
 
-    const c = centroid(contacts);
-    if (c) state.holdSamples.push(c);
-    // Keep sample list bounded
-    if (state.holdSamples.length > 120) {
-      state.holdSamples.splice(0, state.holdSamples.length - 120);
-    }
-
-    const elapsed = (now - state.holdStartedAt) / 1000;
-    state.holdProgress = Math.min(1, elapsed / holdSeconds);
-    const left = Math.max(0, holdSeconds - elapsed);
-
-    emitStatus(
-      left > 0.05
-        ? `手を認識中… あと ${left.toFixed(1)} 秒そのまま置いてください`
-        : "手の位置を確定しています…",
-    );
+    emitStatus(message);
     paintDebug();
 
-    if (elapsed >= holdSeconds) {
+    if (state.holdAccumMs >= holdSeconds * 1000) {
       lockHandFromHold();
     }
   }
@@ -199,6 +254,21 @@ export function createOnscreenPenController({
       }
     };
     state.rafId = requestAnimationFrame(tick);
+  }
+
+  function upsertContact(id, point, source) {
+    state.activePointers.set(id, { ...point, source });
+    state.lastContactAt = performance.now();
+    state.lastSoftPresenceAt = state.lastContactAt;
+  }
+
+  function removeContact(id, { soft = false } = {}) {
+    state.activePointers.delete(id);
+    state.ignorePointerIds.delete(id);
+    if (soft) {
+      state.lastSoftPresenceAt = performance.now();
+      state.weakContact = true;
+    }
   }
 
   function pickTipAt(point) {
@@ -237,18 +307,18 @@ export function createOnscreenPenController({
   function onPointerDown(e) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
     e.preventDefault();
-    canvas.setPointerCapture?.(e.pointerId);
-    const p = canvasPointFromEvent(e);
-    state.activePointers.set(e.pointerId, p);
+    surface.setPointerCapture?.(e.pointerId);
+    const p = canvasPointFromClient(e.clientX, e.clientY);
+    const id = `p:${e.pointerId}`;
+    upsertContact(id, p, "pointer");
 
     if (state.phase === "pickTip") {
-      if (!state.ignorePointerIds.has(e.pointerId)) {
+      if (!state.ignorePointerIds.has(id) && !state.ignorePointerIds.has(e.pointerId)) {
         pickTipAt(p);
       }
     } else if (state.phase === "idle") {
-      // Auto-start hold detection when user first puts hand down
       beginPlaceHand();
-      state.activePointers.set(e.pointerId, p);
+      upsertContact(id, p, "pointer");
     }
 
     paintDebug();
@@ -257,26 +327,72 @@ export function createOnscreenPenController({
   }
 
   function onPointerMove(e) {
-    if (!state.activePointers.has(e.pointerId)) return;
+    const id = `p:${e.pointerId}`;
+    if (!state.activePointers.has(id)) return;
     e.preventDefault();
-    state.activePointers.set(e.pointerId, canvasPointFromEvent(e));
+    upsertContact(id, canvasPointFromClient(e.clientX, e.clientY), "pointer");
     paintDebug();
     maybeDraw(e.timeStamp);
   }
 
   function onPointerUp(e) {
-    state.activePointers.delete(e.pointerId);
-    state.ignorePointerIds.delete(e.pointerId);
-
-    if (state.phase === "placeHand" && state.activePointers.size === 0) {
-      resetHold();
-      emitStatus(`手が離れました。もう一度置き、${holdSeconds}秒維持してください。`);
-    }
-
+    removeContact(`p:${e.pointerId}`);
     if (state.activePointers.size === 0 && state.strokeActive) {
       drawing.endStroke();
       state.strokeActive = false;
       smoother.reset();
+    }
+    paintDebug();
+  }
+
+  function onPointerCancel(e) {
+    // iPad palm rejection often cancels edge/pinky contacts — keep soft presence
+    removeContact(`p:${e.pointerId}`, { soft: true });
+    paintDebug();
+  }
+
+  function onTouchStart(e) {
+    e.preventDefault();
+    if (state.phase === "idle") beginPlaceHand();
+    for (const t of e.changedTouches) {
+      const id = `t:${t.identifier}`;
+      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch");
+      if (state.phase === "pickTip") {
+        if (!state.ignorePointerIds.has(id) && !state.ignorePointerIds.has(t.identifier)) {
+          pickTipAt(canvasPointFromClient(t.clientX, t.clientY));
+        }
+      }
+    }
+    paintDebug();
+    if (state.phase === "placeHand") updateHold(performance.now());
+  }
+
+  function onTouchMove(e) {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      const id = `t:${t.identifier}`;
+      if (!state.activePointers.has(id)) continue;
+      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch");
+    }
+    paintDebug();
+    maybeDraw(e.timeStamp);
+  }
+
+  function onTouchEnd(e) {
+    for (const t of e.changedTouches) {
+      removeContact(`t:${t.identifier}`);
+    }
+    if (state.activePointers.size === 0 && state.strokeActive) {
+      drawing.endStroke();
+      state.strokeActive = false;
+      smoother.reset();
+    }
+    paintDebug();
+  }
+
+  function onTouchCancel(e) {
+    for (const t of e.changedTouches) {
+      removeContact(`t:${t.identifier}`, { soft: true });
     }
     paintDebug();
   }
@@ -307,18 +423,30 @@ export function createOnscreenPenController({
 
   function bind() {
     canvas.style.touchAction = "none";
-    canvas.addEventListener("pointerdown", onPointerDown, { passive: false });
-    canvas.addEventListener("pointermove", onPointerMove, { passive: false });
-    canvas.addEventListener("pointerup", onPointerUp);
-    canvas.addEventListener("pointercancel", onPointerUp);
+    surface.style.touchAction = "none";
+
+    const opts = { passive: false };
+    surface.addEventListener("pointerdown", onPointerDown, opts);
+    surface.addEventListener("pointermove", onPointerMove, opts);
+    surface.addEventListener("pointerup", onPointerUp);
+    surface.addEventListener("pointercancel", onPointerCancel);
+    // Touch Events backup: helps when pointer stream is filtered inconsistently
+    surface.addEventListener("touchstart", onTouchStart, opts);
+    surface.addEventListener("touchmove", onTouchMove, opts);
+    surface.addEventListener("touchend", onTouchEnd);
+    surface.addEventListener("touchcancel", onTouchCancel);
   }
 
   function unbind() {
     cancelAnimationFrame(state.rafId);
-    canvas.removeEventListener("pointerdown", onPointerDown);
-    canvas.removeEventListener("pointermove", onPointerMove);
-    canvas.removeEventListener("pointerup", onPointerUp);
-    canvas.removeEventListener("pointercancel", onPointerUp);
+    surface.removeEventListener("pointerdown", onPointerDown);
+    surface.removeEventListener("pointermove", onPointerMove);
+    surface.removeEventListener("pointerup", onPointerUp);
+    surface.removeEventListener("pointercancel", onPointerCancel);
+    surface.removeEventListener("touchstart", onTouchStart);
+    surface.removeEventListener("touchmove", onTouchMove);
+    surface.removeEventListener("touchend", onTouchEnd);
+    surface.removeEventListener("touchcancel", onTouchCancel);
     state.activePointers.clear();
     resetHold();
   }
@@ -336,28 +464,45 @@ export function createOnscreenPenController({
   };
 }
 
-export function drawContactDebug(ctx, contacts, tip, calibTip, calibAnchor, holdProgress = 0) {
+export function drawContactDebug(
+  ctx,
+  contacts,
+  tip,
+  calibTip,
+  calibAnchor,
+  holdProgress = 0,
+  meta = {},
+) {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
 
-  if (holdProgress > 0 && holdProgress < 1) {
+  if (holdProgress > 0) {
     ctx.save();
-    ctx.fillStyle = "rgba(15, 107, 76, 0.12)";
-    ctx.fillRect(0, 0, w * holdProgress, 10);
-    ctx.fillStyle = "#0f6b4c";
-    ctx.fillRect(0, 0, w * holdProgress, 10);
+    ctx.fillStyle = meta.weakContact
+      ? "rgba(180, 110, 20, 0.85)"
+      : "#0f6b4c";
+    ctx.fillRect(0, 0, w * Math.min(1, holdProgress), 10);
     ctx.restore();
   }
 
   ctx.save();
   for (const c of contacts) {
     ctx.beginPath();
-    ctx.fillStyle = "rgba(15, 107, 76, 0.35)";
-    ctx.strokeStyle = "rgba(15, 107, 76, 0.9)";
+    ctx.fillStyle = meta.weakContact
+      ? "rgba(180, 110, 20, 0.35)"
+      : "rgba(15, 107, 76, 0.35)";
+    ctx.strokeStyle = meta.weakContact
+      ? "rgba(180, 110, 20, 0.95)"
+      : "rgba(15, 107, 76, 0.9)";
     ctx.lineWidth = 2;
-    ctx.arc(c.x, c.y, 26, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, 28, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+  }
+
+  if (!contacts.length && meta.softPresence) {
+    ctx.fillStyle = "rgba(180, 110, 20, 0.12)";
+    ctx.fillRect(0, 0, w, h);
   }
 
   if (calibAnchor) {

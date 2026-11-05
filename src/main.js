@@ -83,12 +83,13 @@ drawing.setGuideMode(config.guide.mode);
 
 const onscreen = createOnscreenPenController({
   canvas: els.drawCanvas,
+  surface: document.getElementById("canvasWrap") || els.drawCanvas,
   drawing,
   smoother,
   holdSeconds: 5,
-  onStatus({ message, phase, holdProgress = 0 }) {
-    setMessage(message);
-    updateHoldUi(phase, holdProgress);
+  onStatus({ message, phase, holdProgress = 0, weakContact = false }) {
+    setMessage(message, { toast: weakContact || phase === "pickTip" || phase === "ready" });
+    updateHoldUi(phase, holdProgress, weakContact);
     els.btnToggleDraw.disabled = !(phase === "ready" || phase === "drawing");
     const drawingOn = phase === "drawing";
     els.btnToggleDraw.textContent = drawingOn ? "描画停止" : "描画開始";
@@ -96,23 +97,37 @@ const onscreen = createOnscreenPenController({
     setPill(els.drawStatus, drawingOn ? "描画: ON" : "描画: OFF", drawingOn);
     updateOnscreenMetrics();
   },
-  onContacts(contacts, tip, calibTip, calibAnchor, holdProgress = 0) {
-    drawing.setContactDebug({ contacts, tip, calibTip, calibAnchor, holdProgress });
+  onContacts(contacts, tip, calibTip, calibAnchor, holdProgress = 0, meta = {}) {
+    drawing.setContactDebug({
+      contacts,
+      tip,
+      calibTip,
+      calibAnchor,
+      holdProgress,
+      meta,
+    });
+    const soft = Boolean(meta.softPresence);
     setPill(
       els.handStatus,
-      contacts.length ? `接触: ${contacts.length}点` : "接触: なし",
-      contacts.length > 0,
+      contacts.length
+        ? `接触: ${contacts.length}点`
+        : soft
+          ? "接触: 弱い"
+          : "接触: なし",
+      contacts.length > 0 || soft,
     );
-    updateHoldUi(onscreen.state.phase, holdProgress);
+    updateHoldUi(onscreen.state.phase, holdProgress, Boolean(meta.weakContact));
     updateOnscreenMetrics(contacts, tip);
   },
 });
 
-function updateHoldUi(phase, holdProgress = 0) {
+function updateHoldUi(phase, holdProgress = 0, weakContact = false) {
   const held = holdProgress * 5;
   setPill(
     els.holdStatus,
-    `保持: ${held.toFixed(1)} / 5.0秒`,
+    weakContact
+      ? `保持: ${held.toFixed(1)} / 5.0秒（弱い）`
+      : `保持: ${held.toFixed(1)} / 5.0秒`,
     holdProgress > 0,
   );
 
@@ -120,10 +135,13 @@ function updateHoldUi(phase, holdProgress = 0) {
   els.holdBanner.classList.remove("hidden", "ready");
   if (phase === "placeHand") {
     const left = Math.max(0, 5 - held);
-    els.holdBanner.textContent =
-      holdProgress > 0
-        ? `手を認識中… あと ${left.toFixed(1)} 秒`
-        : "ペン握り形で手を置き、5秒維持";
+    if (holdProgress <= 0) {
+      els.holdBanner.textContent = "手のひら/指の腹もつけて5秒（小指側だけは反応しにくい）";
+    } else if (weakContact) {
+      els.holdBanner.textContent = `接触が弱い… 進捗 ${(holdProgress * 100).toFixed(0)}% もう少し押しつけ`;
+    } else {
+      els.holdBanner.textContent = `手を認識中… あと ${left.toFixed(1)} 秒`;
+    }
   } else if (phase === "pickTip") {
     els.holdBanner.classList.add("ready");
     els.holdBanner.textContent = "想定ペン先をタップして設定";
