@@ -2,39 +2,41 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-    <title>HandPen AI — Web PoC</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <title>HandPen AI</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
-    <div class="app">
-      <header class="topbar">
+    <div class="app ipad-app">
+      <header class="topbar compact">
         <div class="brand">
           <h1>HandPen AI</h1>
-          <p>画面に手を置き、想定ペン先を指定して直線を描く検証</p>
-          <p class="hint">
-            本命は「手を画面に置いたまま描く」こと。まず接触点＋想定ペン先指定で試します。
-          </p>
+          <p class="hint" id="headerHint">手を5秒置く → ペン先をタップ → 描画</p>
         </div>
         <div class="status-pills">
-          <span id="modeStatus" class="pill on">モード: 画面手置き</span>
+          <span id="holdStatus" class="pill">保持: 0.0 / 5.0秒</span>
           <span id="handStatus" class="pill">接触: なし</span>
           <span id="drawStatus" class="pill">描画: OFF</span>
         </div>
       </header>
 
-      <section class="mode-switch">
+      <section class="mode-switch compact">
         <label class="mode-option">
           <input type="radio" name="inputMode" value="onscreen" checked />
-          画面に手を置く（推奨・iPad向け）
+          画面手置き
         </label>
         <label class="mode-option">
           <input type="radio" name="inputMode" value="camera" />
-          カメラで空中の手を認識（比較用）
+          カメラ比較
         </label>
       </section>
 
-      <main class="workspace">
+      <main class="workspace" id="workspace">
         <section class="panel camera-panel" id="cameraPanel" hidden>
           <div class="panel-title">Camera</div>
           <div class="video-wrap">
@@ -44,36 +46,35 @@
         </section>
 
         <section class="panel draw-panel" id="drawPanel">
-          <div class="panel-title">Canvas（ここに手を置く）</div>
-          <div class="canvas-wrap">
+          <div class="canvas-wrap" id="canvasWrap">
             <canvas id="drawCanvas"></canvas>
+            <div id="holdBanner" class="hold-banner">ペン握り形で手を置き、5秒維持</div>
           </div>
         </section>
       </main>
 
-      <section class="controls">
+      <section class="controls compact">
         <div class="control-row" id="onscreenControls">
-          <button id="btnPlaceHand" class="btn primary">1. 手を置く準備</button>
-          <button id="btnRecordHand" class="btn" disabled>2. 手の位置を記録</button>
-          <button id="btnToggleDraw" class="btn accent" disabled>3. 描画開始</button>
-          <button id="btnClear" class="btn">線を消去</button>
+          <button id="btnPlaceHand" class="btn primary">やり直す</button>
+          <button id="btnToggleDraw" class="btn accent" disabled>描画開始</button>
+          <button id="btnClear" class="btn">消去</button>
         </div>
 
         <div class="control-row" id="cameraControls" hidden>
           <button id="btnStartCamera" class="btn primary">カメラ開始</button>
-          <button id="btnCalibrate" class="btn" disabled>キャリブ（十字合わせ）</button>
+          <button id="btnCalibrate" class="btn" disabled>キャリブ</button>
           <button id="btnToggleDrawCam" class="btn accent" disabled>描画開始</button>
-          <button id="btnClearCam" class="btn" disabled>線を消去</button>
+          <button id="btnClearCam" class="btn" disabled>消去</button>
         </div>
 
-        <div class="control-grid">
+        <div class="control-grid compact-grid">
           <label id="estimationLabel" hidden>
             推定方式
             <select id="estimationMode">
-              <option value="A">A: 人差し指先端</option>
-              <option value="B">B: 親指×人差し指 中間</option>
-              <option value="C" selected>C: 握り + 手首方向（仮想ペン先）</option>
-              <option value="D">D: 三指握り + 延長</option>
+              <option value="A">A: 指先</option>
+              <option value="B">B: 中間</option>
+              <option value="C" selected>C: 仮想ペン先</option>
+              <option value="D">D: 三指</option>
             </select>
           </label>
 
@@ -87,7 +88,7 @@
           </label>
 
           <label>
-            ガイド線
+            ガイド
             <select id="guideMode">
               <option value="none">なし</option>
               <option value="horizontal" selected>水平</option>
@@ -110,7 +111,7 @@
         </div>
 
         <div id="message" class="message">
-          「1. 手を置く準備」→ ペン握り形でキャンバスに手を置く →「2. 手の位置を記録」→ 想定ペン先をタップ。
+          キャンバスに手を置いて5秒待つと、想定ペン先を設定できます。
         </div>
         <div id="metrics" class="metrics">contacts: 0 | tip: — | offset: —</div>
       </section>

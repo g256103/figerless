@@ -105,8 +105,15 @@ export class DrawingEngine {
     }
 
     if (this.contactDebug) {
-      const { contacts, tip, calibTip, calibAnchor } = this.contactDebug;
-      drawContactDebug(ctx, contacts || [], tip, calibTip, calibAnchor);
+      const { contacts, tip, calibTip, calibAnchor, holdProgress } = this.contactDebug;
+      drawContactDebug(
+        ctx,
+        contacts || [],
+        tip,
+        calibTip,
+        calibAnchor,
+        holdProgress || 0,
+      );
     }
 
     if (this.cursor) {

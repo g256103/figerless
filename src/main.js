@@ -20,7 +20,6 @@ const els = {
   estimationLabel: document.getElementById("estimationLabel"),
   penLengthLabel: document.getElementById("penLengthLabel"),
   btnPlaceHand: document.getElementById("btnPlaceHand"),
-  btnRecordHand: document.getElementById("btnRecordHand"),
   btnToggleDraw: document.getElementById("btnToggleDraw"),
   btnClear: document.getElementById("btnClear"),
   btnStartCamera: document.getElementById("btnStartCamera"),
@@ -36,7 +35,8 @@ const els = {
   emaAlphaValue: document.getElementById("emaAlphaValue"),
   message: document.getElementById("message"),
   metrics: document.getElementById("metrics"),
-  modeStatus: document.getElementById("modeStatus"),
+  holdStatus: document.getElementById("holdStatus"),
+  holdBanner: document.getElementById("holdBanner"),
   handStatus: document.getElementById("handStatus"),
   drawStatus: document.getElementById("drawStatus"),
   modeRadios: document.querySelectorAll('input[name="inputMode"]'),
@@ -78,26 +78,58 @@ const onscreen = createOnscreenPenController({
   canvas: els.drawCanvas,
   drawing,
   smoother,
-  onStatus({ message, phase }) {
+  holdSeconds: 5,
+  onStatus({ message, phase, holdProgress = 0 }) {
     setMessage(message);
-    els.btnRecordHand.disabled = phase !== "placeHand";
+    updateHoldUi(phase, holdProgress);
     els.btnToggleDraw.disabled = !(phase === "ready" || phase === "drawing");
     const drawingOn = phase === "drawing";
-    els.btnToggleDraw.textContent = drawingOn ? "描画停止" : "3. 描画開始";
+    els.btnToggleDraw.textContent = drawingOn ? "描画停止" : "描画開始";
     els.btnToggleDraw.classList.toggle("active", drawingOn);
     setPill(els.drawStatus, drawingOn ? "描画: ON" : "描画: OFF", drawingOn);
     updateOnscreenMetrics();
   },
-  onContacts(contacts, tip, calibTip, calibAnchor) {
-    drawing.setContactDebug({ contacts, tip, calibTip, calibAnchor });
+  onContacts(contacts, tip, calibTip, calibAnchor, holdProgress = 0) {
+    drawing.setContactDebug({ contacts, tip, calibTip, calibAnchor, holdProgress });
     setPill(
       els.handStatus,
       contacts.length ? `接触: ${contacts.length}点` : "接触: なし",
       contacts.length > 0,
     );
+    updateHoldUi(onscreen.state.phase, holdProgress);
     updateOnscreenMetrics(contacts, tip);
   },
 });
+
+function updateHoldUi(phase, holdProgress = 0) {
+  const held = holdProgress * 5;
+  setPill(
+    els.holdStatus,
+    `保持: ${held.toFixed(1)} / 5.0秒`,
+    holdProgress > 0,
+  );
+
+  if (!els.holdBanner) return;
+  els.holdBanner.classList.remove("hidden", "ready");
+  if (phase === "placeHand") {
+    const left = Math.max(0, 5 - held);
+    els.holdBanner.textContent =
+      holdProgress > 0
+        ? `手を認識中… あと ${left.toFixed(1)} 秒`
+        : "ペン握り形で手を置き、5秒維持";
+  } else if (phase === "pickTip") {
+    els.holdBanner.classList.add("ready");
+    els.holdBanner.textContent = "想定ペン先をタップして設定";
+  } else if (phase === "ready") {
+    els.holdBanner.classList.add("ready");
+    els.holdBanner.textContent = "ペン先設定済み — 描画開始できます";
+  } else if (phase === "drawing") {
+    els.holdBanner.classList.add("ready");
+    els.holdBanner.textContent = "描画中";
+  } else {
+    els.holdBanner.textContent = "キャンバスに手を置いて5秒待つ";
+  }
+}
 
 function setMessage(text) {
   els.message.textContent = text;
@@ -135,12 +167,6 @@ function setInputMode(mode) {
   els.penLengthLabel.hidden = onscreenMode;
   els.workspace.classList.toggle("camera-mode", !onscreenMode);
 
-  setPill(
-    els.modeStatus,
-    onscreenMode ? "モード: 画面手置き" : "モード: カメラ",
-    true,
-  );
-
   drawing.clear();
   drawing.setContactDebug(null);
   drawing.setCalibrationTarget(null);
@@ -150,20 +176,25 @@ function setInputMode(mode) {
   if (onscreenMode) {
     stopCameraMode();
     onscreen.bind();
-    setMessage(
-      "「1. 手を置く準備」→ ペン握り形でキャンバスに手を置く →「2. 手の位置を記録」→ 想定ペン先をタップ。",
-    );
+    onscreen.beginPlaceHand();
     setPill(els.handStatus, "接触: なし", false);
     setPill(els.drawStatus, "描画: OFF", false);
+    updateHoldUi("placeHand", 0);
   } else {
     onscreen.unbind();
     drawing.setContactDebug(null);
+    if (els.holdBanner) els.holdBanner.classList.add("hidden");
     setMessage("カメラを開始し、空中でペン握り形の手をカメラに見せてください（比較用）。");
     setPill(els.handStatus, "手: 未検出", false);
     setPill(els.drawStatus, "描画: OFF", false);
+    setPill(els.holdStatus, "保持: —", false);
   }
 
-  syncCanvasSize();
+  // Layout settles then resize canvas to full available area
+  requestAnimationFrame(() => {
+    syncCanvasSize();
+    requestAnimationFrame(syncCanvasSize);
+  });
 }
 
 function stopCameraMode() {
@@ -363,16 +394,14 @@ for (const radio of els.modeRadios) {
 // On-screen controls
 els.btnPlaceHand.addEventListener("click", () => {
   onscreen.beginPlaceHand();
-  els.btnRecordHand.disabled = false;
 });
-els.btnRecordHand.addEventListener("click", () => onscreen.recordHand());
 els.btnToggleDraw.addEventListener("click", () => {
   const enable = onscreen.state.phase !== "drawing";
   onscreen.setDrawingEnabled(enable);
 });
 els.btnClear.addEventListener("click", () => {
   drawing.clear();
-  setMessage("線を消去しました。接触点とペン先指定は保持しています。");
+  setMessage("線を消去しました。手の位置とペン先指定は保持しています。");
 });
 
 // Camera controls
@@ -404,6 +433,9 @@ els.emaAlpha.addEventListener("input", (e) => {
 });
 
 window.addEventListener("resize", syncCanvasSize);
+window.addEventListener("orientationchange", () => {
+  setTimeout(syncCanvasSize, 250);
+});
 window.addEventListener("beforeunload", () => {
   stopCameraMode();
   onscreen.unbind();
