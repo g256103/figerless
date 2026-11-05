@@ -1,3 +1,5 @@
+import { drawContactDebug } from "./onscreenPen.js";
+
 export class DrawingEngine {
   constructor(canvas, options) {
     this.canvas = canvas;
@@ -8,6 +10,12 @@ export class DrawingEngine {
     this.currentStroke = null;
     this.cursor = null;
     this.calibrationTarget = null;
+    this.contactDebug = null;
+  }
+
+  setContactDebug(debug) {
+    this.contactDebug = debug;
+    this.redraw();
   }
 
   setGuideMode(mode) {
@@ -94,6 +102,11 @@ export class DrawingEngine {
         ctx.lineTo(stroke[i].x, stroke[i].y);
       }
       ctx.stroke();
+    }
+
+    if (this.contactDebug) {
+      const { contacts, tip, calibTip, calibAnchor } = this.contactDebug;
+      drawContactDebug(ctx, contacts || [], tip, calibTip, calibAnchor);
     }
 
     if (this.cursor) {

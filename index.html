@@ -2,7 +2,7 @@
 <html lang="ja">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>HandPen AI — Web PoC</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
@@ -11,20 +11,31 @@
       <header class="topbar">
         <div class="brand">
           <h1>HandPen AI</h1>
-          <p>ペンを握る手の形から仮想ペン先を推定して直線を描く PoC</p>
+          <p>画面に手を置き、想定ペン先を指定して直線を描く検証</p>
           <p class="hint">
-            いまの Web 版は画面に手を置かず、前面カメラの前 20〜40cm でペン握り形を見せてください。
+            本命は「手を画面に置いたまま描く」こと。まず接触点＋想定ペン先指定で試します。
           </p>
         </div>
         <div class="status-pills">
-          <span id="cameraStatus" class="pill">カメラ: 停止</span>
-          <span id="handStatus" class="pill">手: 未検出</span>
+          <span id="modeStatus" class="pill on">モード: 画面手置き</span>
+          <span id="handStatus" class="pill">接触: なし</span>
           <span id="drawStatus" class="pill">描画: OFF</span>
         </div>
       </header>
 
+      <section class="mode-switch">
+        <label class="mode-option">
+          <input type="radio" name="inputMode" value="onscreen" checked />
+          画面に手を置く（推奨・iPad向け）
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="inputMode" value="camera" />
+          カメラで空中の手を認識（比較用）
+        </label>
+      </section>
+
       <main class="workspace">
-        <section class="panel camera-panel">
+        <section class="panel camera-panel" id="cameraPanel" hidden>
           <div class="panel-title">Camera</div>
           <div class="video-wrap">
             <video id="webcam" playsinline autoplay muted></video>
@@ -32,8 +43,8 @@
           </div>
         </section>
 
-        <section class="panel draw-panel">
-          <div class="panel-title">Canvas</div>
+        <section class="panel draw-panel" id="drawPanel">
+          <div class="panel-title">Canvas（ここに手を置く）</div>
           <div class="canvas-wrap">
             <canvas id="drawCanvas"></canvas>
           </div>
@@ -41,15 +52,22 @@
       </main>
 
       <section class="controls">
-        <div class="control-row">
+        <div class="control-row" id="onscreenControls">
+          <button id="btnPlaceHand" class="btn primary">1. 手を置く準備</button>
+          <button id="btnRecordHand" class="btn" disabled>2. 手の位置を記録</button>
+          <button id="btnToggleDraw" class="btn accent" disabled>3. 描画開始</button>
+          <button id="btnClear" class="btn">線を消去</button>
+        </div>
+
+        <div class="control-row" id="cameraControls" hidden>
           <button id="btnStartCamera" class="btn primary">カメラ開始</button>
           <button id="btnCalibrate" class="btn" disabled>キャリブ（十字合わせ）</button>
-          <button id="btnToggleDraw" class="btn accent" disabled>描画開始</button>
-          <button id="btnClear" class="btn" disabled>線を消去</button>
+          <button id="btnToggleDrawCam" class="btn accent" disabled>描画開始</button>
+          <button id="btnClearCam" class="btn" disabled>線を消去</button>
         </div>
 
         <div class="control-grid">
-          <label>
+          <label id="estimationLabel" hidden>
             推定方式
             <select id="estimationMode">
               <option value="A">A: 人差し指先端</option>
@@ -78,7 +96,7 @@
             </select>
           </label>
 
-          <label>
+          <label id="penLengthLabel" hidden>
             ペン長 L
             <input id="penLength" type="range" min="0.02" max="0.30" step="0.01" value="0.12" />
             <span id="penLengthValue">0.12</span>
@@ -92,11 +110,9 @@
         </div>
 
         <div id="message" class="message">
-          カメラを開始し、画面に手を置かず、カメラに向かってペン握り形の手を映してください。
+          「1. 手を置く準備」→ ペン握り形でキャンバスに手を置く →「2. 手の位置を記録」→ 想定ペン先をタップ。
         </div>
-        <div id="metrics" class="metrics">
-          Pen: — | grip: — | fps: — | score: —
-        </div>
+        <div id="metrics" class="metrics">contacts: 0 | tip: — | offset: —</div>
       </section>
     </div>
 

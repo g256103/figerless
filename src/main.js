@@ -6,15 +6,27 @@ import { PointSmoother } from "./smoother.js";
 import { toDrawCanvas } from "./coordinateMapper.js";
 import { DrawingEngine } from "./drawingEngine.js";
 import { drawHandOverlay, clearOverlay } from "./overlay.js";
+import { createOnscreenPenController } from "./onscreenPen.js";
 
 const els = {
   video: document.getElementById("webcam"),
   overlay: document.getElementById("overlay"),
   drawCanvas: document.getElementById("drawCanvas"),
-  btnStartCamera: document.getElementById("btnStartCamera"),
-  btnCalibrate: document.getElementById("btnCalibrate"),
+  cameraPanel: document.getElementById("cameraPanel"),
+  drawPanel: document.getElementById("drawPanel"),
+  workspace: document.querySelector(".workspace"),
+  onscreenControls: document.getElementById("onscreenControls"),
+  cameraControls: document.getElementById("cameraControls"),
+  estimationLabel: document.getElementById("estimationLabel"),
+  penLengthLabel: document.getElementById("penLengthLabel"),
+  btnPlaceHand: document.getElementById("btnPlaceHand"),
+  btnRecordHand: document.getElementById("btnRecordHand"),
   btnToggleDraw: document.getElementById("btnToggleDraw"),
   btnClear: document.getElementById("btnClear"),
+  btnStartCamera: document.getElementById("btnStartCamera"),
+  btnCalibrate: document.getElementById("btnCalibrate"),
+  btnToggleDrawCam: document.getElementById("btnToggleDrawCam"),
+  btnClearCam: document.getElementById("btnClearCam"),
   estimationMode: document.getElementById("estimationMode"),
   smoothingMode: document.getElementById("smoothingMode"),
   guideMode: document.getElementById("guideMode"),
@@ -24,12 +36,14 @@ const els = {
   emaAlphaValue: document.getElementById("emaAlphaValue"),
   message: document.getElementById("message"),
   metrics: document.getElementById("metrics"),
-  cameraStatus: document.getElementById("cameraStatus"),
+  modeStatus: document.getElementById("modeStatus"),
   handStatus: document.getElementById("handStatus"),
   drawStatus: document.getElementById("drawStatus"),
+  modeRadios: document.querySelectorAll('input[name="inputMode"]'),
 };
 
 const state = {
+  inputMode: "onscreen",
   stream: null,
   tracker: null,
   running: false,
@@ -60,6 +74,31 @@ const drawing = new DrawingEngine(els.drawCanvas, {
 });
 drawing.setGuideMode(config.guide.mode);
 
+const onscreen = createOnscreenPenController({
+  canvas: els.drawCanvas,
+  drawing,
+  smoother,
+  onStatus({ message, phase }) {
+    setMessage(message);
+    els.btnRecordHand.disabled = phase !== "placeHand";
+    els.btnToggleDraw.disabled = !(phase === "ready" || phase === "drawing");
+    const drawingOn = phase === "drawing";
+    els.btnToggleDraw.textContent = drawingOn ? "描画停止" : "3. 描画開始";
+    els.btnToggleDraw.classList.toggle("active", drawingOn);
+    setPill(els.drawStatus, drawingOn ? "描画: ON" : "描画: OFF", drawingOn);
+    updateOnscreenMetrics();
+  },
+  onContacts(contacts, tip, calibTip, calibAnchor) {
+    drawing.setContactDebug({ contacts, tip, calibTip, calibAnchor });
+    setPill(
+      els.handStatus,
+      contacts.length ? `接触: ${contacts.length}点` : "接触: なし",
+      contacts.length > 0,
+    );
+    updateOnscreenMetrics(contacts, tip);
+  },
+});
+
 function setMessage(text) {
   els.message.textContent = text;
 }
@@ -76,10 +115,67 @@ function syncCanvasSize() {
   drawing.resize(width, height);
 }
 
-function enableControls(cameraOn) {
-  els.btnCalibrate.disabled = !cameraOn;
-  els.btnToggleDraw.disabled = !cameraOn;
-  els.btnClear.disabled = !cameraOn;
+function updateOnscreenMetrics(contacts = onscreen.getContacts(), tip = onscreen.getTip()) {
+  const offset = onscreen.getOffset();
+  const tipText = tip ? `(${tip.x.toFixed(0)}, ${tip.y.toFixed(0)})` : "—";
+  const offText = offset
+    ? `(${offset.x.toFixed(0)}, ${offset.y.toFixed(0)})`
+    : "—";
+  els.metrics.textContent = `contacts: ${contacts.length} | tip: ${tipText} | offset: ${offText}`;
+}
+
+function setInputMode(mode) {
+  state.inputMode = mode;
+  const onscreenMode = mode === "onscreen";
+
+  els.cameraPanel.hidden = onscreenMode;
+  els.onscreenControls.hidden = !onscreenMode;
+  els.cameraControls.hidden = onscreenMode;
+  els.estimationLabel.hidden = onscreenMode;
+  els.penLengthLabel.hidden = onscreenMode;
+  els.workspace.classList.toggle("camera-mode", !onscreenMode);
+
+  setPill(
+    els.modeStatus,
+    onscreenMode ? "モード: 画面手置き" : "モード: カメラ",
+    true,
+  );
+
+  drawing.clear();
+  drawing.setContactDebug(null);
+  drawing.setCalibrationTarget(null);
+  drawing.setCursor(null);
+  smoother.reset();
+
+  if (onscreenMode) {
+    stopCameraMode();
+    onscreen.bind();
+    setMessage(
+      "「1. 手を置く準備」→ ペン握り形でキャンバスに手を置く →「2. 手の位置を記録」→ 想定ペン先をタップ。",
+    );
+    setPill(els.handStatus, "接触: なし", false);
+    setPill(els.drawStatus, "描画: OFF", false);
+  } else {
+    onscreen.unbind();
+    drawing.setContactDebug(null);
+    setMessage("カメラを開始し、空中でペン握り形の手をカメラに見せてください（比較用）。");
+    setPill(els.handStatus, "手: 未検出", false);
+    setPill(els.drawStatus, "描画: OFF", false);
+  }
+
+  syncCanvasSize();
+}
+
+function stopCameraMode() {
+  state.running = false;
+  cancelAnimationFrame(state.rafId);
+  stopCamera(els.video, state.stream);
+  state.stream = null;
+  state.tracker?.close();
+  state.tracker = null;
+  state.drawingEnabled = false;
+  state.strokeActive = false;
+  clearOverlay(els.overlay);
 }
 
 async function onStartCamera() {
@@ -92,47 +188,34 @@ async function onStartCamera() {
 
     syncCanvasSize();
     state.running = true;
-    setPill(els.cameraStatus, "カメラ: ON", true);
-    enableControls(true);
+    els.btnCalibrate.disabled = false;
+    els.btnToggleDrawCam.disabled = false;
+    els.btnClearCam.disabled = false;
     setMessage(
-      "手が映ったら緑の骨格と黄色い仮想ペン先が出ます。画面に置かず、カメラの前でペン握り形を見せてから描画開始してください。",
+      "手が映ったら骨格と仮想ペン先が出ます。比較用モードです。本命検証は「画面に手を置く」側です。",
     );
-    els.btnStartCamera.textContent = "カメラ再起動";
     loop();
   } catch (err) {
     console.error(err);
     setMessage(`カメラ起動に失敗しました: ${err.message || err}`);
-    els.btnStartCamera.disabled = false;
-    setPill(els.cameraStatus, "カメラ: エラー", false);
   } finally {
     els.btnStartCamera.disabled = false;
   }
 }
 
-function onToggleDraw() {
+function onToggleDrawCam() {
   state.drawingEnabled = !state.drawingEnabled;
   if (!state.drawingEnabled) {
     state.strokeActive = false;
     drawing.endStroke();
   }
-  els.btnToggleDraw.textContent = state.drawingEnabled ? "描画停止" : "描画開始";
-  els.btnToggleDraw.classList.toggle("active", state.drawingEnabled);
+  els.btnToggleDrawCam.textContent = state.drawingEnabled ? "描画停止" : "描画開始";
+  els.btnToggleDrawCam.classList.toggle("active", state.drawingEnabled);
   setPill(els.drawStatus, state.drawingEnabled ? "描画: ON" : "描画: OFF", state.drawingEnabled);
-  setMessage(
-    state.drawingEnabled
-      ? "描画中。ペン握り形を維持して手首・手全体を動かしてください。"
-      : "描画を停止しました。",
-  );
 }
 
-function onClear() {
-  drawing.clear();
-  setMessage("線を消去しました。");
-}
-
-function onCalibrate() {
+function onCalibrateCam() {
   if (!state.running) return;
-
   const target = {
     x: drawing.canvas.width * 0.5,
     y: drawing.canvas.height * 0.5,
@@ -143,19 +226,17 @@ function onCalibrate() {
     state.drawingEnabled = false;
     state.strokeActive = false;
     drawing.endStroke();
-    els.btnToggleDraw.textContent = "描画開始";
-    els.btnToggleDraw.classList.remove("active");
+    els.btnToggleDrawCam.textContent = "描画開始";
+    els.btnToggleDrawCam.classList.remove("active");
     setPill(els.drawStatus, "描画: OFF", false);
     drawing.setCalibrationTarget(target);
     els.btnCalibrate.textContent = "この位置で確定";
-    setMessage(
-      "緑の点（仮想ペン先）を中央の十字に重ねて、もう一度ボタンを押して確定してください。",
-    );
+    setMessage("仮想ペン先を中央の十字に重ねて、もう一度押して確定してください。");
     return;
   }
 
   if (!state.lastRawTip) {
-    setMessage("手が検出されていません。手を映してから再度確定してください。");
+    setMessage("手が検出されていません。");
     return;
   }
 
@@ -180,17 +261,25 @@ function onCalibrate() {
   );
 }
 
-function updateMetrics() {
+function clearerFrame() {
+  const videoW = els.video.videoWidth || els.overlay.width || 640;
+  const videoH = els.video.videoHeight || els.overlay.height || 480;
+  if (els.overlay.width !== videoW || els.overlay.height !== videoH) {
+    els.overlay.width = videoW;
+    els.overlay.height = videoH;
+  }
+  clearOverlay(els.overlay);
+}
+
+function updateCameraMetrics() {
   const tip = state.lastSmoothTip;
-  const tipText = tip
-    ? `(${tip.x.toFixed(3)}, ${tip.y.toFixed(3)})`
-    : "—";
+  const tipText = tip ? `(${tip.x.toFixed(3)}, ${tip.y.toFixed(3)})` : "—";
   els.metrics.textContent =
-    `Pen: ${tipText} | grip: ${state.lastGrip.toFixed(2)} | fps: ${state.fps} | score: ${state.lastScore.toFixed(2)} | mode: ${config.estimation.mode}`;
+    `Pen: ${tipText} | grip: ${state.lastGrip.toFixed(2)} | fps: ${state.fps} | score: ${state.lastScore.toFixed(2)}`;
 }
 
 function loop() {
-  if (!state.running) return;
+  if (!state.running || state.inputMode !== "camera") return;
 
   const now = performance.now();
   state.frames += 1;
@@ -202,7 +291,6 @@ function loop() {
 
   const result = state.tracker?.detect(els.video, now);
 
-  // null = same video frame (keep previous). object = new inference result.
   if (result) {
     if (result.landmarks?.length) {
       const landmarks = result.landmarks[0];
@@ -252,7 +340,6 @@ function loop() {
       state.lastGrip = 0;
       state.lastScore = 0;
       clearerFrame();
-
       if (state.strokeActive) {
         drawing.endStroke();
         state.strokeActive = false;
@@ -262,48 +349,54 @@ function loop() {
     }
   }
 
-  updateMetrics();
+  updateCameraMetrics();
   state.rafId = requestAnimationFrame(loop);
 }
 
-function clearerFrame() {
-  const videoW = els.video.videoWidth || els.overlay.width || 640;
-  const videoH = els.video.videoHeight || els.overlay.height || 480;
-  if (els.overlay.width !== videoW || els.overlay.height !== videoH) {
-    els.overlay.width = videoW;
-    els.overlay.height = videoH;
-  }
-  clearOverlay(els.overlay);
+// Mode switching
+for (const radio of els.modeRadios) {
+  radio.addEventListener("change", () => {
+    if (radio.checked) setInputMode(radio.value);
+  });
 }
 
-// UI bindings
+// On-screen controls
+els.btnPlaceHand.addEventListener("click", () => {
+  onscreen.beginPlaceHand();
+  els.btnRecordHand.disabled = false;
+});
+els.btnRecordHand.addEventListener("click", () => onscreen.recordHand());
+els.btnToggleDraw.addEventListener("click", () => {
+  const enable = onscreen.state.phase !== "drawing";
+  onscreen.setDrawingEnabled(enable);
+});
+els.btnClear.addEventListener("click", () => {
+  drawing.clear();
+  setMessage("線を消去しました。接触点とペン先指定は保持しています。");
+});
+
+// Camera controls
 els.btnStartCamera.addEventListener("click", onStartCamera);
-els.btnToggleDraw.addEventListener("click", onToggleDraw);
-els.btnClear.addEventListener("click", onClear);
-els.btnCalibrate.addEventListener("click", onCalibrate);
+els.btnToggleDrawCam.addEventListener("click", onToggleDrawCam);
+els.btnClearCam.addEventListener("click", () => drawing.clear());
+els.btnCalibrate.addEventListener("click", onCalibrateCam);
 
 els.estimationMode.addEventListener("change", (e) => {
   config.estimation.mode = e.target.value;
   smoother.reset();
-  setMessage(`推定方式を ${config.estimation.mode} に切り替えました。`);
 });
-
 els.smoothingMode.addEventListener("change", (e) => {
   config.smoothing.mode = e.target.value;
   smoother.setMode(config.smoothing.mode);
-  setMessage(`平滑化を ${config.smoothing.mode} に切り替えました。`);
 });
-
 els.guideMode.addEventListener("change", (e) => {
   config.guide.mode = e.target.value;
   drawing.setGuideMode(config.guide.mode);
 });
-
 els.penLength.addEventListener("input", (e) => {
   config.estimation.L = Number(e.target.value);
   els.penLengthValue.textContent = config.estimation.L.toFixed(2);
 });
-
 els.emaAlpha.addEventListener("input", (e) => {
   config.smoothing.emaAlpha = Number(e.target.value);
   els.emaAlphaValue.textContent = config.smoothing.emaAlpha.toFixed(2);
@@ -311,11 +404,10 @@ els.emaAlpha.addEventListener("input", (e) => {
 });
 
 window.addEventListener("resize", syncCanvasSize);
-syncCanvasSize();
-
 window.addEventListener("beforeunload", () => {
-  state.running = false;
-  cancelAnimationFrame(state.rafId);
-  stopCamera(els.video, state.stream);
-  state.tracker?.close();
+  stopCameraMode();
+  onscreen.unbind();
 });
+
+setInputMode("onscreen");
+syncCanvasSize();

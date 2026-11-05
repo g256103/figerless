@@ -12,6 +12,7 @@
 6. **何を測って成功と判断するか** → [06-EXPERIMENTS.md](06-EXPERIMENTS.md)
 7. **どう実装するか** → [07-IMPLEMENTATION.md](07-IMPLEMENTATION.md)
 8. **まだ決めていない案・補強案** → [08-DESIGN-NOTES.md](08-DESIGN-NOTES.md)
+9. **画面手置き + 想定ペン先指定** → [09-ONSCREEN-TIP-CALIB.md](09-ONSCREEN-TIP-CALIB.md)
 
 ## 設計の三層（常に分離する）
 
