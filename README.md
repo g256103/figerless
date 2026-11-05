@@ -43,9 +43,16 @@ Phase 4〜  個人差補正・曲線・iPad化 …
 - Canvas API
 - `navigator.mediaDevices.getUserMedia()`
 
-## デモの起動
+## 公開デモ（iPad 確認用）
 
-Chrome / Edge でローカルサーバー経由で開いてください（カメラは `localhost` または HTTPS が必要です）。
+- リポジトリ: https://github.com/g256103/figerless
+- GitHub Pages: https://g256103.github.io/figerless/
+
+iPad の Safari で上記 Pages URL を開き、カメラ許可後に動作確認できます（HTTPS 必須のため Pages 経由を推奨）。
+
+## ローカル起動
+
+Chrome / Edge でローカルサーバー経由でも開けます。
 
 ```bash
 npm start
