@@ -1,0 +1,10 @@
+{
+  "name": "handpen-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "HandPen AI Web PoC — draw lines from a virtual pen tip estimated from hand pose",
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "dev": "npx --yes serve -l 5173 ."
+  }
+}

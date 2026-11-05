@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HandPen AI — Web PoC</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <h1>HandPen AI</h1>
+          <p>ペンを握る手の形から仮想ペン先を推定して直線を描く PoC</p>
+        </div>
+        <div class="status-pills">
+          <span id="cameraStatus" class="pill">カメラ: 停止</span>
+          <span id="handStatus" class="pill">手: 未検出</span>
+          <span id="drawStatus" class="pill">描画: OFF</span>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel camera-panel">
+          <div class="panel-title">Camera</div>
+          <div class="video-wrap">
+            <video id="webcam" playsinline autoplay muted></video>
+            <canvas id="overlay"></canvas>
+          </div>
+        </section>
+
+        <section class="panel draw-panel">
+          <div class="panel-title">Canvas</div>
+          <div class="canvas-wrap">
+            <canvas id="drawCanvas"></canvas>
+          </div>
+        </section>
+      </main>
+
+      <section class="controls">
+        <div class="control-row">
+          <button id="btnStartCamera" class="btn primary">カメラ開始</button>
+          <button id="btnCalibrate" class="btn" disabled>キャリブ（十字合わせ）</button>
+          <button id="btnToggleDraw" class="btn accent" disabled>描画開始</button>
+          <button id="btnClear" class="btn" disabled>線を消去</button>
+        </div>
+
+        <div class="control-grid">
+          <label>
+            推定方式
+            <select id="estimationMode">
+              <option value="A">A: 人差し指先端</option>
+              <option value="B">B: 親指×人差し指 中間</option>
+              <option value="C" selected>C: 握り + 手首方向（仮想ペン先）</option>
+              <option value="D">D: 三指握り + 延長</option>
+            </select>
+          </label>
+
+          <label>
+            平滑化
+            <select id="smoothingMode">
+              <option value="none">なし</option>
+              <option value="ema" selected>EMA</option>
+              <option value="oneEuro">One Euro</option>
+            </select>
+          </label>
+
+          <label>
+            ガイド線
+            <select id="guideMode">
+              <option value="none">なし</option>
+              <option value="horizontal" selected>水平</option>
+              <option value="vertical">垂直</option>
+              <option value="diagonal">斜め</option>
+            </select>
+          </label>
+
+          <label>
+            ペン長 L
+            <input id="penLength" type="range" min="0.02" max="0.30" step="0.01" value="0.12" />
+            <span id="penLengthValue">0.12</span>
+          </label>
+
+          <label>
+            EMA α
+            <input id="emaAlpha" type="range" min="0.05" max="1" step="0.05" value="0.30" />
+            <span id="emaAlphaValue">0.30</span>
+          </label>
+        </div>
+
+        <div id="message" class="message">カメラを開始し、ペンを握る形で手を映してください。</div>
+        <div id="metrics" class="metrics">
+          Pen: — | grip: — | fps: — | score: —
+        </div>
+      </section>
+    </div>
+
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
