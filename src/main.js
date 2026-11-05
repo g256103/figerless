@@ -6,26 +6,17 @@ import { PointSmoother } from "./smoother.js";
 import { toDrawCanvas } from "./coordinateMapper.js";
 import { DrawingEngine } from "./drawingEngine.js";
 import { drawHandOverlay, clearOverlay } from "./overlay.js";
-import { createOnscreenPenController } from "./onscreenPen.js";
+
+const GRIP_DEFAULT = 0.55;
 
 const els = {
   video: document.getElementById("webcam"),
   overlay: document.getElementById("overlay"),
   drawCanvas: document.getElementById("drawCanvas"),
-  cameraPanel: document.getElementById("cameraPanel"),
-  drawPanel: document.getElementById("drawPanel"),
-  workspace: document.querySelector(".workspace"),
-  onscreenControls: document.getElementById("onscreenControls"),
-  cameraControls: document.getElementById("cameraControls"),
-  estimationLabel: document.getElementById("estimationLabel"),
-  penLengthLabel: document.getElementById("penLengthLabel"),
-  btnPlaceHand: document.getElementById("btnPlaceHand"),
-  btnToggleDraw: document.getElementById("btnToggleDraw"),
-  btnClear: document.getElementById("btnClear"),
+  canvasWrap: document.getElementById("canvasWrap"),
   btnStartCamera: document.getElementById("btnStartCamera"),
-  btnCalibrate: document.getElementById("btnCalibrate"),
-  btnToggleDrawCam: document.getElementById("btnToggleDrawCam"),
-  btnClearCam: document.getElementById("btnClearCam"),
+  btnSetTip: document.getElementById("btnSetTip"),
+  btnClear: document.getElementById("btnClear"),
   estimationMode: document.getElementById("estimationMode"),
   smoothingMode: document.getElementById("smoothingMode"),
   guideMode: document.getElementById("guideMode"),
@@ -33,36 +24,38 @@ const els = {
   penLengthValue: document.getElementById("penLengthValue"),
   emaAlpha: document.getElementById("emaAlpha"),
   emaAlphaValue: document.getElementById("emaAlphaValue"),
+  gripThreshold: document.getElementById("gripThreshold"),
+  gripThresholdValue: document.getElementById("gripThresholdValue"),
   message: document.getElementById("message"),
   metrics: document.getElementById("metrics"),
-  holdStatus: document.getElementById("holdStatus"),
   holdBanner: document.getElementById("holdBanner"),
   toast: document.getElementById("toast"),
+  cameraStatus: document.getElementById("cameraStatus"),
   handStatus: document.getElementById("handStatus"),
-  drawStatus: document.getElementById("drawStatus"),
+  gripStatus: document.getElementById("gripStatus"),
+  inkStatus: document.getElementById("inkStatus"),
   settingsModal: document.getElementById("settingsModal"),
   btnOpenSettings: document.getElementById("btnOpenSettings"),
   btnCloseSettings: document.getElementById("btnCloseSettings"),
   settingsBackdrop: document.getElementById("settingsBackdrop"),
-  highSensitivity: document.getElementById("highSensitivity"),
-  modeRadios: document.querySelectorAll('input[name="inputMode"]'),
 };
 
 let toastTimer = 0;
 
 const state = {
-  inputMode: "onscreen",
   stream: null,
   tracker: null,
   running: false,
-  drawingEnabled: false,
+  tipCalibrated: false,
+  awaitingTipTap: false,
   strokeActive: false,
-  calibrating: false,
   lastLandmarks: null,
-  lastRawTip: null,
+  lastBaseTip: null, // estimated tip before user offset, in norm space
   lastSmoothTip: null,
-  lastScore: 0,
   lastGrip: 0,
+  gripping: false,
+  inking: false,
+  gripThreshold: GRIP_DEFAULT,
   frames: 0,
   fps: 0,
   lastFpsAt: performance.now(),
@@ -81,84 +74,14 @@ const drawing = new DrawingEngine(els.drawCanvas, {
   guideColor: config.drawing.guideColor,
 });
 drawing.setGuideMode(config.guide.mode);
+drawing.setContactDebug(null);
 
-const onscreen = createOnscreenPenController({
-  canvas: els.drawCanvas,
-  surface: document.getElementById("canvasWrap") || els.drawCanvas,
-  drawing,
-  smoother,
-  holdSeconds: 5,
-  highSensitivity: true,
-  onStatus({ message, phase, holdProgress = 0, weakContact = false }) {
-    setMessage(message, { toast: weakContact || phase === "pickTip" || phase === "ready" });
-    updateHoldUi(phase, holdProgress, weakContact);
-    els.btnToggleDraw.disabled = !(phase === "ready" || phase === "drawing");
-    const drawingOn = phase === "drawing";
-    els.btnToggleDraw.textContent = drawingOn ? "描画停止" : "描画開始";
-    els.btnToggleDraw.classList.toggle("active", drawingOn);
-    setPill(els.drawStatus, drawingOn ? "描画: ON" : "描画: OFF", drawingOn);
-    updateOnscreenMetrics();
-  },
-  onContacts(contacts, tip, calibTip, calibAnchor, holdProgress = 0, meta = {}) {
-    drawing.setContactDebug({
-      contacts,
-      tip,
-      calibTip,
-      calibAnchor,
-      holdProgress,
-      meta,
-    });
-    const soft = Boolean(meta.softPresence);
-    setPill(
-      els.handStatus,
-      contacts.length
-        ? `接触: ${contacts.length}点`
-        : soft
-          ? "接触: 弱い"
-          : "接触: なし",
-      contacts.length > 0 || soft,
-    );
-    updateHoldUi(onscreen.state.phase, holdProgress, Boolean(meta.weakContact));
-    updateOnscreenMetrics(contacts, tip);
-  },
-});
-
-function updateHoldUi(phase, holdProgress = 0, weakContact = false) {
-  const held = holdProgress * 5;
-  setPill(
-    els.holdStatus,
-    weakContact
-      ? `保持: ${held.toFixed(1)} / 5.0秒（弱い）`
-      : `保持: ${held.toFixed(1)} / 5.0秒`,
-    holdProgress > 0,
-  );
-
-  if (!els.holdBanner) return;
-  els.holdBanner.classList.remove("hidden", "ready");
-  if (phase === "placeHand") {
-    const left = Math.max(0, 5 - held);
-    if (holdProgress <= 0) {
-      els.holdBanner.textContent = "手のひら/指の腹もつけて5秒（小指側だけは反応しにくい）";
-    } else if (weakContact) {
-      els.holdBanner.textContent = `接触が弱い… 進捗 ${(holdProgress * 100).toFixed(0)}% もう少し押しつけ`;
-    } else {
-      els.holdBanner.textContent = `手を認識中… あと ${left.toFixed(1)} 秒`;
-    }
-  } else if (phase === "pickTip") {
-    els.holdBanner.classList.add("ready");
-    els.holdBanner.textContent = "想定ペン先をタップして設定";
-  } else if (phase === "ready") {
-    els.holdBanner.classList.add("ready");
-    els.holdBanner.textContent = "ペン先設定済み — 描画開始できます";
-  } else if (phase === "drawing") {
-    els.holdBanner.classList.add("ready");
-    els.holdBanner.textContent = "描画中";
-  } else {
-    els.holdBanner.textContent = "キャンバスに手を置いて5秒待つ";
-  }
+function setPill(el, text, on) {
+  el.textContent = text;
+  el.classList.toggle("on", Boolean(on));
 }
 
-function setMessage(text, { toast = true } = {}) {
+function setMessage(text, { toast = false } = {}) {
   if (els.message) els.message.textContent = text;
   if (!toast || !els.toast) return;
   els.toast.hidden = false;
@@ -167,6 +90,17 @@ function setMessage(text, { toast = true } = {}) {
   toastTimer = setTimeout(() => {
     els.toast.hidden = true;
   }, 2200);
+}
+
+function setBanner(text, ready = false) {
+  els.holdBanner.textContent = text;
+  els.holdBanner.classList.toggle("ready", ready);
+  els.holdBanner.classList.remove("hidden");
+}
+
+function syncCanvasSize() {
+  const rect = els.drawCanvas.parentElement.getBoundingClientRect();
+  drawing.resize(Math.max(1, Math.round(rect.width)), Math.max(1, Math.round(rect.height)));
 }
 
 function openSettings() {
@@ -181,182 +115,123 @@ function closeSettings() {
   });
 }
 
-function setPill(el, text, on) {
-  el.textContent = text;
-  el.classList.toggle("on", Boolean(on));
+function canvasPointFromEvent(e) {
+  const rect = els.drawCanvas.getBoundingClientRect();
+  const scaleX = els.drawCanvas.width / Math.max(rect.width, 1);
+  const scaleY = els.drawCanvas.height / Math.max(rect.height, 1);
+  return {
+    x: (e.clientX - rect.left) * scaleX,
+    y: (e.clientY - rect.top) * scaleY,
+  };
 }
 
-function syncCanvasSize() {
-  const rect = els.drawCanvas.parentElement.getBoundingClientRect();
-  const width = Math.max(1, Math.round(rect.width));
-  const height = Math.max(1, Math.round(rect.height));
-  drawing.resize(width, height);
+/** Convert canvas pixel → MediaPipe norm (mirrored mapping inverse). */
+function canvasToNorm(point) {
+  return {
+    x: 1 - point.x / Math.max(els.drawCanvas.width, 1),
+    y: point.y / Math.max(els.drawCanvas.height, 1),
+  };
 }
 
-function updateOnscreenMetrics(contacts = onscreen.getContacts(), tip = onscreen.getTip()) {
-  const offset = onscreen.getOffset();
-  const tipText = tip ? `(${tip.x.toFixed(0)}, ${tip.y.toFixed(0)})` : "—";
-  const offText = offset
-    ? `(${offset.x.toFixed(0)}, ${offset.y.toFixed(0)})`
-    : "—";
-  els.metrics.textContent = `contacts: ${contacts.length} | tip: ${tipText} | offset: ${offText}`;
-}
+async function onStartCamera() {
+  try {
+    setMessage("カメラと手認識モデルを読み込み中…", { toast: true });
+    els.btnStartCamera.disabled = true;
 
-function setInputMode(mode) {
-  state.inputMode = mode;
-  const onscreenMode = mode === "onscreen";
+    if (state.running) {
+      stopAll();
+    }
 
-  els.cameraPanel.hidden = onscreenMode;
-  els.onscreenControls.hidden = !onscreenMode;
-  els.cameraControls.hidden = onscreenMode;
-  els.estimationLabel.hidden = onscreenMode;
-  els.penLengthLabel.hidden = onscreenMode;
-  els.workspace.classList.toggle("camera-mode", !onscreenMode);
-
-  drawing.clear();
-  drawing.setContactDebug(null);
-  drawing.setCalibrationTarget(null);
-  drawing.setCursor(null);
-  smoother.reset();
-
-  if (onscreenMode) {
-    stopCameraMode();
-    onscreen.bind();
-    onscreen.beginPlaceHand();
-    setPill(els.handStatus, "接触: なし", false);
-    setPill(els.drawStatus, "描画: OFF", false);
-    updateHoldUi("placeHand", 0);
-  } else {
-    onscreen.unbind();
-    drawing.setContactDebug(null);
-    if (els.holdBanner) els.holdBanner.classList.add("hidden");
-    setMessage("カメラを開始し、空中でペン握り形の手をカメラに見せてください（比較用）。");
-    setPill(els.handStatus, "手: 未検出", false);
-    setPill(els.drawStatus, "描画: OFF", false);
-    setPill(els.holdStatus, "保持: —", false);
-  }
-
-  // Layout settles then resize canvas to full available area
-  requestAnimationFrame(() => {
+    state.stream = await startCamera(els.video, config.camera);
+    state.tracker = await createHandTracker(config.mediapipe, config.hand);
     syncCanvasSize();
-    requestAnimationFrame(syncCanvasSize);
-  });
+    state.running = true;
+    state.tipCalibrated = false;
+    state.awaitingTipTap = false;
+    config.estimation.offset = { x: 0, y: 0 };
+
+    els.btnSetTip.disabled = false;
+    els.btnClear.disabled = false;
+    setPill(els.cameraStatus, "カメラ: ON", true);
+    setBanner("ペン握り形で手を見せてから「ペン先を指定」");
+    setMessage("手が検出されたら「ペン先を指定」→ キャンバスをタップ。握り形のときだけインクが出ます。");
+    loop();
+  } catch (err) {
+    console.error(err);
+    setMessage(`カメラ起動に失敗: ${err.message || err}`, { toast: true });
+    setPill(els.cameraStatus, "カメラ: エラー", false);
+  } finally {
+    els.btnStartCamera.disabled = false;
+    els.btnStartCamera.textContent = state.running ? "カメラ再起動" : "カメラ開始";
+  }
 }
 
-function stopCameraMode() {
+function stopAll() {
   state.running = false;
   cancelAnimationFrame(state.rafId);
   stopCamera(els.video, state.stream);
   state.stream = null;
   state.tracker?.close();
   state.tracker = null;
-  state.drawingEnabled = false;
   state.strokeActive = false;
+  state.inking = false;
   clearOverlay(els.overlay);
 }
 
-async function onStartCamera() {
-  try {
-    setMessage("カメラと MediaPipe モデルを読み込み中…");
-    els.btnStartCamera.disabled = true;
-
-    state.stream = await startCamera(els.video, config.camera);
-    state.tracker = await createHandTracker(config.mediapipe, config.hand);
-
-    syncCanvasSize();
-    state.running = true;
-    els.btnCalibrate.disabled = false;
-    els.btnToggleDrawCam.disabled = false;
-    els.btnClearCam.disabled = false;
-    setMessage(
-      "手が映ったら骨格と仮想ペン先が出ます。比較用モードです。本命検証は「画面に手を置く」側です。",
-    );
-    loop();
-  } catch (err) {
-    console.error(err);
-    setMessage(`カメラ起動に失敗しました: ${err.message || err}`);
-  } finally {
-    els.btnStartCamera.disabled = false;
-  }
-}
-
-function onToggleDrawCam() {
-  state.drawingEnabled = !state.drawingEnabled;
-  if (!state.drawingEnabled) {
-    state.strokeActive = false;
-    drawing.endStroke();
-  }
-  els.btnToggleDrawCam.textContent = state.drawingEnabled ? "描画停止" : "描画開始";
-  els.btnToggleDrawCam.classList.toggle("active", state.drawingEnabled);
-  setPill(els.drawStatus, state.drawingEnabled ? "描画: ON" : "描画: OFF", state.drawingEnabled);
-}
-
-function onCalibrateCam() {
+function onSetTip() {
   if (!state.running) return;
-  const target = {
+  if (!state.lastBaseTip) {
+    setMessage("先にペン握り形の手をカメラに映してください。", { toast: true });
+    return;
+  }
+  state.awaitingTipTap = true;
+  drawing.setCalibrationTarget({
     x: drawing.canvas.width * 0.5,
     y: drawing.canvas.height * 0.5,
-  };
+  });
+  setBanner("想定するペン先の位置をキャンバスでタップ", true);
+  setMessage("いまの手の位置を基準に、ペン先だと思う場所をタップしてください。", { toast: true });
+}
 
-  if (!state.calibrating) {
-    state.calibrating = true;
-    state.drawingEnabled = false;
-    state.strokeActive = false;
-    drawing.endStroke();
-    els.btnToggleDrawCam.textContent = "描画開始";
-    els.btnToggleDrawCam.classList.remove("active");
-    setPill(els.drawStatus, "描画: OFF", false);
-    drawing.setCalibrationTarget(target);
-    els.btnCalibrate.textContent = "この位置で確定";
-    setMessage("仮想ペン先を中央の十字に重ねて、もう一度押して確定してください。");
+function applyTipFromCanvasPoint(canvasPoint) {
+  if (!state.lastBaseTip) {
+    setMessage("手が検出されていません。", { toast: true });
     return;
   }
-
-  if (!state.lastRawTip) {
-    setMessage("手が検出されていません。");
-    return;
-  }
-
-  const desiredNorm = {
-    x: 1 - target.x / drawing.canvas.width,
-    y: target.y / drawing.canvas.height,
-  };
-  const currentWithoutOffset = {
-    x: state.lastRawTip.x - config.estimation.offset.x,
-    y: state.lastRawTip.y - config.estimation.offset.y,
-  };
+  // lastBaseTip is estimated tip WITHOUT user offset (we store raw base separately)
+  const desiredNorm = canvasToNorm(canvasPoint);
   config.estimation.offset = {
-    x: desiredNorm.x - currentWithoutOffset.x,
-    y: desiredNorm.y - currentWithoutOffset.y,
+    x: desiredNorm.x - state.lastBaseTip.x,
+    y: desiredNorm.y - state.lastBaseTip.y,
   };
-
-  state.calibrating = false;
-  drawing.setCalibrationTarget(null);
-  els.btnCalibrate.textContent = "キャリブ（十字合わせ）";
+  state.tipCalibrated = true;
+  state.awaitingTipTap = false;
+  drawing.setCalibrationTarget(canvasPoint);
+  setBanner("準備完了 — ペン握り形のときだけインクが出ます", true);
   setMessage(
-    `キャリブ完了。offset=(${config.estimation.offset.x.toFixed(3)}, ${config.estimation.offset.y.toFixed(3)})`,
+    `ペン先を設定しました。offset=(${config.estimation.offset.x.toFixed(3)}, ${config.estimation.offset.y.toFixed(3)})`,
+    { toast: true },
   );
 }
 
-function clearerFrame() {
-  const videoW = els.video.videoWidth || els.overlay.width || 640;
-  const videoH = els.video.videoHeight || els.overlay.height || 480;
-  if (els.overlay.width !== videoW || els.overlay.height !== videoH) {
-    els.overlay.width = videoW;
-    els.overlay.height = videoH;
-  }
-  clearOverlay(els.overlay);
+function onCanvasPointerDown(e) {
+  if (!state.awaitingTipTap) return;
+  if (e.pointerType === "mouse" && e.button !== 0) return;
+  e.preventDefault();
+  applyTipFromCanvasPoint(canvasPointFromEvent(e));
 }
 
-function updateCameraMetrics() {
-  const tip = state.lastSmoothTip;
-  const tipText = tip ? `(${tip.x.toFixed(3)}, ${tip.y.toFixed(3)})` : "—";
-  els.metrics.textContent =
-    `Pen: ${tipText} | grip: ${state.lastGrip.toFixed(2)} | fps: ${state.fps} | score: ${state.lastScore.toFixed(2)}`;
+function endInkStroke() {
+  if (state.strokeActive) {
+    drawing.endStroke();
+    state.strokeActive = false;
+  }
+  state.inking = false;
+  setPill(els.inkStatus, "インク: OFF", false);
 }
 
 function loop() {
-  if (!state.running || state.inputMode !== "camera") return;
+  if (!state.running) return;
 
   const now = performance.now();
   state.frames += 1;
@@ -371,12 +246,25 @@ function loop() {
   if (result) {
     if (result.landmarks?.length) {
       const landmarks = result.landmarks[0];
-      const score = result.handednesses?.[0]?.[0]?.score || 1;
-
       state.lastLandmarks = landmarks;
-      state.lastScore = score;
       state.lastGrip = estimateGripScore(landmarks);
+      state.gripping = state.lastGrip >= state.gripThreshold;
+
       setPill(els.handStatus, "手: 検出中", true);
+      setPill(
+        els.gripStatus,
+        state.gripping ? `握り: ON (${state.lastGrip.toFixed(2)})` : `握り: OFF (${state.lastGrip.toFixed(2)})`,
+        state.gripping,
+      );
+
+      const baseOnly = estimatePenTip(config.estimation.mode, landmarks, {
+        L: config.estimation.L,
+        offset: { x: 0, y: 0 },
+      });
+      if (baseOnly) {
+        // Raw geometric tip (no user offset) — used when assigning pen tip
+        state.lastBaseTip = { x: baseOnly.x, y: baseOnly.y };
+      }
 
       const estimated = estimatePenTip(config.estimation.mode, landmarks, {
         L: config.estimation.L,
@@ -384,8 +272,7 @@ function loop() {
       });
 
       if (estimated) {
-        state.lastRawTip = { x: estimated.x, y: estimated.y };
-        const smooth = smoother.update(state.lastRawTip, now);
+        const smooth = smoother.update({ x: estimated.x, y: estimated.y }, now);
         state.lastSmoothTip = smooth;
 
         const videoW = els.video.videoWidth || 1280;
@@ -400,69 +287,86 @@ function loop() {
         );
         drawing.setCursor(canvasPoint);
 
-        if (state.drawingEnabled && canvasPoint) {
+        // Ink only while calibrated AND gripping (pen-hold pose)
+        const shouldInk = state.tipCalibrated && state.gripping && canvasPoint;
+        if (shouldInk) {
+          state.inking = true;
+          setPill(els.inkStatus, "インク: ON", true);
           if (!state.strokeActive) {
             drawing.beginStroke(canvasPoint);
             state.strokeActive = true;
           } else {
             drawing.continueStroke(canvasPoint);
           }
+          if (!state.awaitingTipTap) {
+            setBanner("描画中（ペン握り形）", true);
+          }
+        } else {
+          if (state.strokeActive) endInkStroke();
+          else {
+            state.inking = false;
+            setPill(els.inkStatus, "インク: OFF", false);
+          }
+          if (state.tipCalibrated && !state.awaitingTipTap) {
+            setBanner(
+              state.gripping ? "インク待機" : "ペン握り形にするとインクが出ます",
+              false,
+            );
+          }
         }
       }
     } else {
       setPill(els.handStatus, "手: 未検出", false);
+      setPill(els.gripStatus, "握り: OFF", false);
       state.lastLandmarks = null;
-      state.lastRawTip = null;
+      state.lastBaseTip = null;
       state.lastSmoothTip = null;
       state.lastGrip = 0;
-      state.lastScore = 0;
+      state.gripping = false;
       clearerFrame();
-      if (state.strokeActive) {
-        drawing.endStroke();
-        state.strokeActive = false;
-      }
+      endInkStroke();
       drawing.setCursor(null);
       smoother.reset();
+      if (state.tipCalibrated && !state.awaitingTipTap) {
+        setBanner("手が見つかりません");
+      }
     }
   }
 
-  updateCameraMetrics();
+  updateMetrics();
   state.rafId = requestAnimationFrame(loop);
 }
 
-// Settings modal
+function clearerFrame() {
+  const videoW = els.video.videoWidth || els.overlay.width || 640;
+  const videoH = els.video.videoHeight || els.overlay.height || 480;
+  if (els.overlay.width !== videoW || els.overlay.height !== videoH) {
+    els.overlay.width = videoW;
+    els.overlay.height = videoH;
+  }
+  clearOverlay(els.overlay);
+}
+
+function updateMetrics() {
+  const tip = state.lastSmoothTip;
+  const tipText = tip ? `(${tip.x.toFixed(3)}, ${tip.y.toFixed(3)})` : "—";
+  els.metrics.textContent =
+    `grip: ${state.lastGrip.toFixed(2)} | tip: ${tipText} | fps: ${state.fps} | calibrated: ${state.tipCalibrated ? "yes" : "no"}`;
+}
+
+// UI
+els.btnStartCamera.addEventListener("click", onStartCamera);
+els.btnSetTip.addEventListener("click", onSetTip);
+els.btnClear.addEventListener("click", () => {
+  drawing.clear();
+  setMessage("線を消去しました。ペン先設定は保持しています。", { toast: true });
+});
 els.btnOpenSettings.addEventListener("click", openSettings);
 els.btnCloseSettings.addEventListener("click", closeSettings);
 els.settingsBackdrop.addEventListener("click", closeSettings);
 
-// Mode switching
-for (const radio of els.modeRadios) {
-  radio.addEventListener("change", () => {
-    if (radio.checked) {
-      setInputMode(radio.value);
-      closeSettings();
-    }
-  });
-}
-
-// On-screen controls
-els.btnPlaceHand.addEventListener("click", () => {
-  onscreen.beginPlaceHand();
-});
-els.btnToggleDraw.addEventListener("click", () => {
-  const enable = onscreen.state.phase !== "drawing";
-  onscreen.setDrawingEnabled(enable);
-});
-els.btnClear.addEventListener("click", () => {
-  drawing.clear();
-  setMessage("線を消去しました。手の位置とペン先指定は保持しています。");
-});
-
-// Camera controls
-els.btnStartCamera.addEventListener("click", onStartCamera);
-els.btnToggleDrawCam.addEventListener("click", onToggleDrawCam);
-els.btnClearCam.addEventListener("click", () => drawing.clear());
-els.btnCalibrate.addEventListener("click", onCalibrateCam);
+els.drawCanvas.addEventListener("pointerdown", onCanvasPointerDown, { passive: false });
+els.canvasWrap?.addEventListener("pointerdown", onCanvasPointerDown, { passive: false });
 
 els.estimationMode.addEventListener("change", (e) => {
   config.estimation.mode = e.target.value;
@@ -485,19 +389,15 @@ els.emaAlpha.addEventListener("input", (e) => {
   els.emaAlphaValue.textContent = config.smoothing.emaAlpha.toFixed(2);
   smoother.setEmaAlpha(config.smoothing.emaAlpha);
 });
-
-els.highSensitivity?.addEventListener("change", (e) => {
-  onscreen.setHighSensitivity(e.target.checked);
+els.gripThreshold.addEventListener("input", (e) => {
+  state.gripThreshold = Number(e.target.value);
+  els.gripThresholdValue.textContent = state.gripThreshold.toFixed(2);
 });
 
 window.addEventListener("resize", syncCanvasSize);
-window.addEventListener("orientationchange", () => {
-  setTimeout(syncCanvasSize, 250);
-});
-window.addEventListener("beforeunload", () => {
-  stopCameraMode();
-  onscreen.unbind();
-});
+window.addEventListener("orientationchange", () => setTimeout(syncCanvasSize, 250));
+window.addEventListener("beforeunload", stopAll);
 
-setInputMode("onscreen");
 syncCanvasSize();
+setBanner("カメラを開始してください");
+setMessage("カメラで手の骨格を検知し、ペン先を指定すると、握り形のときだけ描けます。");

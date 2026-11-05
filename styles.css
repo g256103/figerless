@@ -113,7 +113,13 @@ body {
 }
 
 .workspace.camera-mode {
-  grid-template-columns: minmax(180px, 28%) 1fr;
+  grid-template-columns: minmax(220px, 34%) 1fr;
+}
+
+@media (orientation: landscape) {
+  .workspace.camera-mode {
+    grid-template-columns: minmax(240px, 36%) 1fr;
+  }
 }
 
 .panel {

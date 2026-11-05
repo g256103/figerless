@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>HandPen AI</title>
-    <link rel="stylesheet" href="./styles.css?v=no-palm-unlock" />
+    <link rel="stylesheet" href="./styles.css?v=camera-simple" />
   </head>
   <body>
     <div class="app ipad-app landscape-app">
@@ -18,17 +18,16 @@
           <h1>HandPen AI</h1>
         </div>
         <div class="status-pills">
-          <span id="holdStatus" class="pill">保持: 0.0 / 5.0秒</span>
-          <span id="handStatus" class="pill">接触: なし</span>
-          <span id="drawStatus" class="pill">描画: OFF</span>
+          <span id="cameraStatus" class="pill">カメラ: 停止</span>
+          <span id="handStatus" class="pill">手: 未検出</span>
+          <span id="gripStatus" class="pill">握り: OFF</span>
+          <span id="inkStatus" class="pill">インク: OFF</span>
         </div>
-        <button id="btnOpenSettings" class="btn settings-btn" type="button" aria-label="設定">
-          設定
-        </button>
+        <button id="btnOpenSettings" class="btn settings-btn" type="button">設定</button>
       </header>
 
-      <main class="workspace" id="workspace">
-        <section class="panel camera-panel" id="cameraPanel" hidden>
+      <main class="workspace camera-mode" id="workspace">
+        <section class="panel camera-panel" id="cameraPanel">
           <div class="video-wrap">
             <video id="webcam" playsinline autoplay muted></video>
             <canvas id="overlay"></canvas>
@@ -38,36 +37,24 @@
         <section class="panel draw-panel" id="drawPanel">
           <div class="canvas-wrap" id="canvasWrap">
             <canvas id="drawCanvas"></canvas>
-            <div id="holdBanner" class="hold-banner">ペン握り形で手を置き、5秒維持</div>
+            <div id="holdBanner" class="hold-banner">カメラを開始してください</div>
             <div id="toast" class="toast" hidden></div>
           </div>
         </section>
       </main>
 
       <nav class="action-dock" aria-label="主要操作">
-        <div class="control-row" id="onscreenControls">
-          <button id="btnPlaceHand" class="btn primary">やり直す</button>
-          <button id="btnToggleDraw" class="btn accent" disabled>描画開始</button>
-          <button id="btnClear" class="btn">消去</button>
-        </div>
-
-        <div class="control-row" id="cameraControls" hidden>
+        <div class="control-row">
           <button id="btnStartCamera" class="btn primary">カメラ開始</button>
-          <button id="btnCalibrate" class="btn" disabled>キャリブ</button>
-          <button id="btnToggleDrawCam" class="btn accent" disabled>描画開始</button>
-          <button id="btnClearCam" class="btn" disabled>消去</button>
+          <button id="btnSetTip" class="btn" disabled>ペン先を指定</button>
+          <button id="btnClear" class="btn" disabled>消去</button>
         </div>
       </nav>
     </div>
 
     <div id="settingsModal" class="modal" hidden>
       <div class="modal-backdrop" id="settingsBackdrop"></div>
-      <div
-        class="modal-sheet"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="settingsTitle"
-      >
+      <div class="modal-sheet" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
         <div class="modal-header">
           <h2 id="settingsTitle">設定</h2>
           <button id="btnCloseSettings" class="btn" type="button">閉じる</button>
@@ -75,41 +62,23 @@
 
         <div class="modal-body">
           <section class="modal-section">
-            <h3>入力モード</h3>
-            <div class="mode-switch">
-              <label class="mode-option">
-                <input type="radio" name="inputMode" value="onscreen" checked />
-                画面手置き（横向き推奨）
-              </label>
-              <label class="mode-option">
-                <input type="radio" name="inputMode" value="camera" />
-                カメラ比較
-              </label>
-            </div>
-          </section>
-
-          <section class="modal-section">
-            <h3>接触認識</h3>
+            <h3>使い方</h3>
             <p class="settings-note">
-              Palm Rejection（掌拒否）は iPadOS / Safari から解除できません。
-              下の高感度は「OSが通した接点」をできるだけ活かす設定です。検証時は Apple Pencil を使わないでください。
+              1. カメラ開始 → 2. ペン握り形で手を見せる → 3.「ペン先を指定」後にキャンバスをタップ →
+              4. 握り形のときだけインクが出ます（握りを崩すと止まります）
             </p>
-            <label class="mode-option sensitivity-option">
-              <input id="highSensitivity" type="checkbox" checked />
-              高感度モード（推奨）
-            </label>
           </section>
 
           <section class="modal-section">
             <h3>描画オプション</h3>
             <div class="control-grid">
-              <label id="estimationLabel" hidden>
-                推定方式
+              <label>
+                推定の基準
                 <select id="estimationMode">
-                  <option value="A">A: 指先</option>
-                  <option value="B">B: 中間</option>
-                  <option value="C" selected>C: 仮想ペン先</option>
-                  <option value="D">D: 三指</option>
+                  <option value="A">A: 人差し指先端</option>
+                  <option value="B">B: 親指×人差し指</option>
+                  <option value="C" selected>C: 握り+延長</option>
+                  <option value="D">D: 三指+延長</option>
                 </select>
               </label>
 
@@ -132,7 +101,7 @@
                 </select>
               </label>
 
-              <label id="penLengthLabel" hidden>
+              <label>
                 ペン長 L
                 <input id="penLength" type="range" min="0.02" max="0.30" step="0.01" value="0.12" />
                 <span id="penLengthValue">0.12</span>
@@ -143,20 +112,24 @@
                 <input id="emaAlpha" type="range" min="0.05" max="1" step="0.05" value="0.30" />
                 <span id="emaAlphaValue">0.30</span>
               </label>
+
+              <label>
+                握り判定のしきい値
+                <input id="gripThreshold" type="range" min="0.35" max="0.85" step="0.05" value="0.55" />
+                <span id="gripThresholdValue">0.55</span>
+              </label>
             </div>
           </section>
 
           <section class="modal-section">
             <h3>状態</h3>
-            <div id="message" class="message">
-              キャンバスに手を置いて5秒待つと、想定ペン先を設定できます。
-            </div>
-            <div id="metrics" class="metrics">contacts: 0 | tip: — | offset: —</div>
+            <div id="message" class="message">カメラを開始してください。</div>
+            <div id="metrics" class="metrics">grip: — | tip: — | fps: —</div>
           </section>
         </div>
       </div>
     </div>
 
-    <script type="module" src="./src/main.js?v=no-palm-unlock"></script>
+    <script type="module" src="./src/main.js?v=camera-simple"></script>
   </body>
 </html>

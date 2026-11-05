@@ -33,6 +33,7 @@ function average(points) {
   return { x: x / n, y: y / n };
 }
 
+/** Higher score ≈ pen-holding pose (thumb+index(+middle) pinch, other fingers curled). */
 export function estimateGripScore(landmarks) {
   if (!landmarks || landmarks.length < 21) return 0;
 
@@ -52,12 +53,13 @@ export function estimateGripScore(landmarks) {
   const pinkyFold = dist(pinky, landmarks[17]);
 
   let score = 0;
-  if (pinch > 0.02 && pinch < 0.12) score += 0.3;
-  if (indexMiddle < 0.08) score += 0.25;
-  if (indexCurl < 0.12) score += 0.15;
-  if (middleCurl < 0.13) score += 0.15;
-  if (ringFold < 0.1) score += 0.075;
-  if (pinkyFold < 0.1) score += 0.075;
+  // Pen grip: thumb near index tip, not fully open flat hand
+  if (pinch > 0.015 && pinch < 0.14) score += 0.34;
+  if (indexMiddle < 0.09) score += 0.22;
+  if (indexCurl < 0.13) score += 0.14;
+  if (middleCurl < 0.14) score += 0.14;
+  if (ringFold < 0.11) score += 0.08;
+  if (pinkyFold < 0.11) score += 0.08;
 
   return Math.max(0, Math.min(1, score));
 }
