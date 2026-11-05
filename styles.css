@@ -61,6 +61,13 @@ body {
   font-size: 0.95rem;
 }
 
+.brand .hint {
+  max-width: 42rem;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: #0f6b4c;
+}
+
 .status-pills {
   display: flex;
   flex-wrap: wrap;

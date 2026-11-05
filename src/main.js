@@ -94,7 +94,9 @@ async function onStartCamera() {
     state.running = true;
     setPill(els.cameraStatus, "カメラ: ON", true);
     enableControls(true);
-    setMessage("手が映ったら緑の骨格と黄色い仮想ペン先が出ます。描画開始で線を引けます。");
+    setMessage(
+      "手が映ったら緑の骨格と黄色い仮想ペン先が出ます。画面に置かず、カメラの前でペン握り形を見せてから描画開始してください。",
+    );
     els.btnStartCamera.textContent = "カメラ再起動";
     loop();
   } catch (err) {

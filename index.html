@@ -12,6 +12,9 @@
         <div class="brand">
           <h1>HandPen AI</h1>
           <p>ペンを握る手の形から仮想ペン先を推定して直線を描く PoC</p>
+          <p class="hint">
+            いまの Web 版は画面に手を置かず、前面カメラの前 20〜40cm でペン握り形を見せてください。
+          </p>
         </div>
         <div class="status-pills">
           <span id="cameraStatus" class="pill">カメラ: 停止</span>
@@ -88,7 +91,9 @@
           </label>
         </div>
 
-        <div id="message" class="message">カメラを開始し、ペンを握る形で手を映してください。</div>
+        <div id="message" class="message">
+          カメラを開始し、画面に手を置かず、カメラに向かってペン握り形の手を映してください。
+        </div>
         <div id="metrics" class="metrics">
           Pen: — | grip: — | fps: — | score: —
         </div>

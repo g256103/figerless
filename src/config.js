@@ -6,9 +6,10 @@ export const config = {
   },
   hand: {
     numHands: 1,
-    minHandDetectionConfidence: 0.6,
-    minHandPresenceConfidence: 0.5,
-    minTrackingConfidence: 0.5,
+    // iPad 前面カメラの斜め・近距離でも拾いやすく、少し緩めにする
+    minHandDetectionConfidence: 0.4,
+    minHandPresenceConfidence: 0.4,
+    minTrackingConfidence: 0.4,
   },
   estimation: {
     mode: "C",

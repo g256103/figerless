@@ -2,17 +2,34 @@ import { FilesetResolver, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@m
 
 export async function createHandTracker(mediapipeConfig, handConfig) {
   const vision = await FilesetResolver.forVisionTasks(mediapipeConfig.wasm);
-  const handLandmarker = await HandLandmarker.createFromOptions(vision, {
-    baseOptions: {
-      modelAssetPath: mediapipeConfig.model,
-      delegate: "GPU",
-    },
+
+  const options = {
     runningMode: "VIDEO",
     numHands: handConfig.numHands,
     minHandDetectionConfidence: handConfig.minHandDetectionConfidence,
     minHandPresenceConfidence: handConfig.minHandPresenceConfidence,
     minTrackingConfidence: handConfig.minTrackingConfidence,
-  });
+  };
+
+  let handLandmarker;
+  try {
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      ...options,
+      baseOptions: {
+        modelAssetPath: mediapipeConfig.model,
+        delegate: "GPU",
+      },
+    });
+  } catch (err) {
+    console.warn("GPU delegate failed, falling back to CPU", err);
+    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+      ...options,
+      baseOptions: {
+        modelAssetPath: mediapipeConfig.model,
+        delegate: "CPU",
+      },
+    });
+  }
 
   let lastVideoTime = -1;
 
