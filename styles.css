@@ -400,6 +400,20 @@ select {
   color: var(--muted);
 }
 
+.settings-note {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(138, 47, 47, 0.08);
+  color: var(--ink);
+  font-size: 0.86rem;
+  line-height: 1.45;
+}
+
+.sensitivity-option {
+  width: 100%;
+}
+
 /* Landscape iPad priority */
 @media (orientation: landscape) {
   .app.landscape-app {

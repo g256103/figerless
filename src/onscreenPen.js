@@ -15,6 +15,27 @@ export const HOLD_GAP_GRACE_MS = 900;
 /** Treat very recent cancelled/lost touches as soft presence (ms). */
 export const SOFT_PRESENCE_MS = 450;
 
+/**
+ * Palm Rejection cannot be disabled from Web/App Store apps.
+ * "highSensitivity" only maximizes use of contacts the OS still delivers.
+ */
+export const SENSITIVITY = {
+  normal: {
+    holdSeconds: 5,
+    gapGraceMs: 900,
+    softPresenceMs: 450,
+    softAccumRate: 0.55,
+    decayRate: 0.35,
+  },
+  high: {
+    holdSeconds: 3.5,
+    gapGraceMs: 1600,
+    softPresenceMs: 900,
+    softAccumRate: 0.85,
+    decayRate: 0.18,
+  },
+};
+
 export function centroid(points) {
   if (!points.length) return null;
   let x = 0;
@@ -26,6 +47,20 @@ export function centroid(points) {
   return { x: x / points.length, y: y / points.length };
 }
 
+export function weightedCentroid(points) {
+  if (!points.length) return null;
+  let x = 0;
+  let y = 0;
+  let wSum = 0;
+  for (const p of points) {
+    const w = Math.max(1, Number(p.weight) || 1);
+    x += p.x * w;
+    y += p.y * w;
+    wSum += w;
+  }
+  return { x: x / wSum, y: y / wSum };
+}
+
 export function createOnscreenPenController({
   canvas,
   surface = canvas,
@@ -35,10 +70,11 @@ export function createOnscreenPenController({
   onContacts,
   holdSeconds = HOLD_SECONDS_REQUIRED,
   gapGraceMs = HOLD_GAP_GRACE_MS,
+  highSensitivity = true,
 }) {
   const state = {
     phase: "idle", // idle | placeHand | pickTip | ready | drawing
-    activePointers: new Map(), // id -> {x,y,source}
+    activePointers: new Map(), // id -> {x,y,source,weight,radius}
     holdAccumMs: 0,
     holdProgress: 0,
     holdSamples: [],
@@ -46,13 +82,24 @@ export function createOnscreenPenController({
     lastSoftPresenceAt: 0,
     lastTickAt: 0,
     weakContact: false,
+    highSensitivity: Boolean(highSensitivity),
     ignorePointerIds: new Set(),
     calibAnchor: null,
     calibTip: null,
     offset: null,
     strokeActive: false,
     rafId: 0,
+    windowCaptureBound: false,
   };
+
+  const profile = () =>
+    state.highSensitivity ? SENSITIVITY.high : SENSITIVITY.normal;
+  let activeHoldSeconds = state.highSensitivity
+    ? SENSITIVITY.high.holdSeconds
+    : holdSeconds;
+  let activeGapGraceMs = state.highSensitivity
+    ? SENSITIVITY.high.gapGraceMs
+    : gapGraceMs;
 
   function setPhase(phase, message) {
     state.phase = phase;
@@ -90,11 +137,33 @@ export function createOnscreenPenController({
   }
 
   function currentContacts() {
-    return [...state.activePointers.values()].map(({ x, y }) => ({ x, y }));
+    return [...state.activePointers.values()].map(({ x, y, weight, radius }) => ({
+      x,
+      y,
+      weight,
+      radius,
+    }));
   }
 
   function currentAnchor() {
-    return centroid(currentContacts());
+    return weightedCentroid(currentContacts()) || centroid(currentContacts());
+  }
+
+  function clientInCanvas(clientX, clientY, pad = 24) {
+    const r = canvas.getBoundingClientRect();
+    return (
+      clientX >= r.left - pad &&
+      clientX <= r.right + pad &&
+      clientY >= r.top - pad &&
+      clientY <= r.bottom + pad
+    );
+  }
+
+  function contactWeightFromSize(width, height, radiusX, radiusY) {
+    const area = Math.max(width || 0, 0) * Math.max(height || 0, 0);
+    const rArea = Math.max(radiusX || 0, 0) * Math.max(radiusY || 0, 0) * 4;
+    // Larger blobs (more palm-like that still got through) weigh more.
+    return Math.max(1, area, rArea, 1);
   }
 
   function currentTip() {
@@ -112,10 +181,11 @@ export function createOnscreenPenController({
   }
 
   function hasSoftPresence(now = performance.now()) {
+    const softMs = profile().softPresenceMs;
     return (
       hasHardContact() ||
-      now - state.lastSoftPresenceAt <= SOFT_PRESENCE_MS ||
-      now - state.lastContactAt <= gapGraceMs
+      now - state.lastSoftPresenceAt <= softMs ||
+      now - state.lastContactAt <= activeGapGraceMs
     );
   }
 
@@ -153,12 +223,25 @@ export function createOnscreenPenController({
     drawing.setCalibrationTarget(null);
     drawing.setCursor(null);
     resetHold();
+    activeHoldSeconds = profile().holdSeconds;
+    activeGapGraceMs = profile().gapGraceMs;
     setPhase(
       "placeHand",
-      `手を置いて${holdSeconds}秒維持してください。小指側だけより、手のひらや複数指を軽くつけると反応しやすいです。`,
+      `手を置いて${activeHoldSeconds}秒維持してください。Palm Rejectionは解除できません。手のひら/指の腹を面でつけると精度が上がります。`,
     );
     paintDebug();
     startHoldLoop();
+  }
+
+  function setHighSensitivity(enabled) {
+    state.highSensitivity = Boolean(enabled);
+    activeHoldSeconds = profile().holdSeconds;
+    activeGapGraceMs = profile().gapGraceMs;
+    emitStatus(
+      state.highSensitivity
+        ? "高感度モードON（掌拒否は解除不可。途切れに強い判定＋大きめ接点を優先）"
+        : "通常感度に戻しました（掌拒否は OS 側のままです）",
+    );
   }
 
   function lockHandFromHold() {
@@ -179,7 +262,7 @@ export function createOnscreenPenController({
       return;
     }
 
-    state.calibAnchor = centroid(samples.filter(Boolean));
+    state.calibAnchor = weightedCentroid(samples.filter(Boolean)) || centroid(samples.filter(Boolean));
     state.ignorePointerIds = new Set(state.activePointers.keys());
     resetHold();
     setPhase(
@@ -204,33 +287,30 @@ export function createOnscreenPenController({
       state.lastContactAt = now;
       state.weakContact = false;
       state.holdAccumMs += dt;
-      const c = centroid(currentContacts());
+      const c = currentAnchor();
       if (c) state.holdSamples.push(c);
       if (state.holdSamples.length > 160) {
         state.holdSamples.splice(0, state.holdSamples.length - 160);
       }
-    } else if (soft && gap <= gapGraceMs) {
-      // Brief dropout: keep progress, mark as weak
+    } else if (soft && gap <= activeGapGraceMs) {
       state.weakContact = true;
-      // Still accumulate at reduced rate so intermittent pinky contact can finish
-      state.holdAccumMs += dt * 0.55;
-    } else if (state.holdAccumMs > 0 && gap > gapGraceMs) {
-      // Long gap: decay slowly instead of hard reset (helps unstable edge contact)
+      state.holdAccumMs += dt * profile().softAccumRate;
+    } else if (state.holdAccumMs > 0 && gap > activeGapGraceMs) {
       state.weakContact = true;
-      state.holdAccumMs = Math.max(0, state.holdAccumMs - dt * 0.35);
+      state.holdAccumMs = Math.max(0, state.holdAccumMs - dt * profile().decayRate);
       if (state.holdAccumMs <= 0) {
         state.holdSamples = [];
       }
     }
 
-    state.holdProgress = Math.min(1, state.holdAccumMs / (holdSeconds * 1000));
-    const left = Math.max(0, holdSeconds - state.holdAccumMs / 1000);
+    state.holdProgress = Math.min(1, state.holdAccumMs / (activeHoldSeconds * 1000));
+    const left = Math.max(0, activeHoldSeconds - state.holdAccumMs / 1000);
 
     let message;
     if (!hard && state.holdAccumMs <= 0) {
-      message = `手を置いてください。小指側だけだと反応しにくいので、手のひらや指の腹も軽くつけて${holdSeconds}秒維持。`;
+      message = `手を置いてください。掌拒否は解除不可です。手のひら/指の腹を面でつけて${activeHoldSeconds}秒。`;
     } else if (state.weakContact && !hard) {
-      message = `接触が弱い/途切れています… 進捗 ${(state.holdProgress * 100).toFixed(0)}%  もう少し押しつけつつ維持`;
+      message = `接触が弱い/途切れ… 進捗 ${(state.holdProgress * 100).toFixed(0)}%（高感度でも OS が弾いた点は復活できません）`;
     } else if (left > 0.05) {
       message = `手を認識中… あと ${left.toFixed(1)} 秒`;
     } else {
@@ -240,7 +320,7 @@ export function createOnscreenPenController({
     emitStatus(message);
     paintDebug();
 
-    if (state.holdAccumMs >= holdSeconds * 1000) {
+    if (state.holdAccumMs >= activeHoldSeconds * 1000) {
       lockHandFromHold();
     }
   }
@@ -256,8 +336,22 @@ export function createOnscreenPenController({
     state.rafId = requestAnimationFrame(tick);
   }
 
-  function upsertContact(id, point, source) {
-    state.activePointers.set(id, { ...point, source });
+  function upsertContact(id, point, source, size = {}) {
+    const weight = contactWeightFromSize(
+      size.width,
+      size.height,
+      size.radiusX,
+      size.radiusY,
+    );
+    const radius = Math.max(
+      8,
+      (Number(size.width) || 0) / 2,
+      (Number(size.height) || 0) / 2,
+      Number(size.radiusX) || 0,
+      Number(size.radiusY) || 0,
+      12,
+    );
+    state.activePointers.set(id, { ...point, source, weight, radius });
     state.lastContactAt = performance.now();
     state.lastSoftPresenceAt = state.lastContactAt;
   }
@@ -304,13 +398,32 @@ export function createOnscreenPenController({
     return true;
   }
 
+  function pointerSize(e) {
+    return {
+      width: e.width || 0,
+      height: e.height || 0,
+      radiusX: e.width ? e.width / 2 : 0,
+      radiusY: e.height ? e.height / 2 : 0,
+    };
+  }
+
+  function touchSize(t) {
+    return {
+      width: (t.radiusX || 0) * 2,
+      height: (t.radiusY || 0) * 2,
+      radiusX: t.radiusX || 0,
+      radiusY: t.radiusY || 0,
+    };
+  }
+
   function onPointerDown(e) {
     if (e.pointerType === "mouse" && e.button !== 0) return;
+    if (!clientInCanvas(e.clientX, e.clientY) && e.currentTarget === window) return;
     e.preventDefault();
     surface.setPointerCapture?.(e.pointerId);
     const p = canvasPointFromClient(e.clientX, e.clientY);
     const id = `p:${e.pointerId}`;
-    upsertContact(id, p, "pointer");
+    upsertContact(id, p, "pointer", pointerSize(e));
 
     if (state.phase === "pickTip") {
       if (!state.ignorePointerIds.has(id) && !state.ignorePointerIds.has(e.pointerId)) {
@@ -318,7 +431,7 @@ export function createOnscreenPenController({
       }
     } else if (state.phase === "idle") {
       beginPlaceHand();
-      upsertContact(id, p, "pointer");
+      upsertContact(id, p, "pointer", pointerSize(e));
     }
 
     paintDebug();
@@ -330,7 +443,12 @@ export function createOnscreenPenController({
     const id = `p:${e.pointerId}`;
     if (!state.activePointers.has(id)) return;
     e.preventDefault();
-    upsertContact(id, canvasPointFromClient(e.clientX, e.clientY), "pointer");
+    upsertContact(
+      id,
+      canvasPointFromClient(e.clientX, e.clientY),
+      "pointer",
+      pointerSize(e),
+    );
     paintDebug();
     maybeDraw(e.timeStamp);
   }
@@ -352,11 +470,20 @@ export function createOnscreenPenController({
   }
 
   function onTouchStart(e) {
+    // During calibration, accept canvas-local touches even if OS partially filters pointer stream.
+    if (e.currentTarget === window) {
+      let any = false;
+      for (const t of e.changedTouches) {
+        if (clientInCanvas(t.clientX, t.clientY)) any = true;
+      }
+      if (!any) return;
+    }
     e.preventDefault();
     if (state.phase === "idle") beginPlaceHand();
     for (const t of e.changedTouches) {
+      if (!clientInCanvas(t.clientX, t.clientY) && e.currentTarget === window) continue;
       const id = `t:${t.identifier}`;
-      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch");
+      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch", touchSize(t));
       if (state.phase === "pickTip") {
         if (!state.ignorePointerIds.has(id) && !state.ignorePointerIds.has(t.identifier)) {
           pickTipAt(canvasPointFromClient(t.clientX, t.clientY));
@@ -372,7 +499,7 @@ export function createOnscreenPenController({
     for (const t of e.changedTouches) {
       const id = `t:${t.identifier}`;
       if (!state.activePointers.has(id)) continue;
-      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch");
+      upsertContact(id, canvasPointFromClient(t.clientX, t.clientY), "touch", touchSize(t));
     }
     paintDebug();
     maybeDraw(e.timeStamp);
@@ -430,11 +557,21 @@ export function createOnscreenPenController({
     surface.addEventListener("pointermove", onPointerMove, opts);
     surface.addEventListener("pointerup", onPointerUp);
     surface.addEventListener("pointercancel", onPointerCancel);
-    // Touch Events backup: helps when pointer stream is filtered inconsistently
     surface.addEventListener("touchstart", onTouchStart, opts);
     surface.addEventListener("touchmove", onTouchMove, opts);
     surface.addEventListener("touchend", onTouchEnd);
     surface.addEventListener("touchcancel", onTouchCancel);
+
+    // Extra window capture during hand placement: recover borderline contacts
+    // that still reach JS but miss the canvas target due to rejection jitter.
+    if (!state.windowCaptureBound) {
+      window.addEventListener("pointerdown", onPointerDown, opts);
+      window.addEventListener("touchstart", onTouchStart, opts);
+      window.addEventListener("touchmove", onTouchMove, opts);
+      window.addEventListener("pointercancel", onPointerCancel);
+      window.addEventListener("touchcancel", onTouchCancel);
+      state.windowCaptureBound = true;
+    }
   }
 
   function unbind() {
@@ -447,6 +584,14 @@ export function createOnscreenPenController({
     surface.removeEventListener("touchmove", onTouchMove);
     surface.removeEventListener("touchend", onTouchEnd);
     surface.removeEventListener("touchcancel", onTouchCancel);
+    if (state.windowCaptureBound) {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("touchstart", onTouchStart);
+      window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("pointercancel", onPointerCancel);
+      window.removeEventListener("touchcancel", onTouchCancel);
+      state.windowCaptureBound = false;
+    }
     state.activePointers.clear();
     resetHold();
   }
@@ -457,6 +602,7 @@ export function createOnscreenPenController({
     unbind,
     beginPlaceHand,
     setDrawingEnabled,
+    setHighSensitivity,
     getOffset: () => state.offset,
     getContacts: currentContacts,
     getTip: currentTip,
@@ -487,6 +633,7 @@ export function drawContactDebug(
 
   ctx.save();
   for (const c of contacts) {
+    const r = Math.max(16, Math.min(48, Number(c.radius) || 28));
     ctx.beginPath();
     ctx.fillStyle = meta.weakContact
       ? "rgba(180, 110, 20, 0.35)"
@@ -495,7 +642,7 @@ export function drawContactDebug(
       ? "rgba(180, 110, 20, 0.95)"
       : "rgba(15, 107, 76, 0.9)";
     ctx.lineWidth = 2;
-    ctx.arc(c.x, c.y, 28, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, r, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
   }

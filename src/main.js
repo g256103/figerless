@@ -44,6 +44,7 @@ const els = {
   btnOpenSettings: document.getElementById("btnOpenSettings"),
   btnCloseSettings: document.getElementById("btnCloseSettings"),
   settingsBackdrop: document.getElementById("settingsBackdrop"),
+  highSensitivity: document.getElementById("highSensitivity"),
   modeRadios: document.querySelectorAll('input[name="inputMode"]'),
 };
 
@@ -87,6 +88,7 @@ const onscreen = createOnscreenPenController({
   drawing,
   smoother,
   holdSeconds: 5,
+  highSensitivity: true,
   onStatus({ message, phase, holdProgress = 0, weakContact = false }) {
     setMessage(message, { toast: weakContact || phase === "pickTip" || phase === "ready" });
     updateHoldUi(phase, holdProgress, weakContact);
@@ -482,6 +484,10 @@ els.emaAlpha.addEventListener("input", (e) => {
   config.smoothing.emaAlpha = Number(e.target.value);
   els.emaAlphaValue.textContent = config.smoothing.emaAlpha.toFixed(2);
   smoother.setEmaAlpha(config.smoothing.emaAlpha);
+});
+
+els.highSensitivity?.addEventListener("change", (e) => {
+  onscreen.setHighSensitivity(e.target.checked);
 });
 
 window.addEventListener("resize", syncCanvasSize);

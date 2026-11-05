@@ -13,6 +13,7 @@
 7. **どう実装するか** → [07-IMPLEMENTATION.md](07-IMPLEMENTATION.md)
 8. **まだ決めていない案・補強案** → [08-DESIGN-NOTES.md](08-DESIGN-NOTES.md)
 9. **画面手置き + 想定ペン先指定** → [09-ONSCREEN-TIP-CALIB.md](09-ONSCREEN-TIP-CALIB.md)
+10. **Palm Rejection の限界** → [10-PALM-REJECTION.md](10-PALM-REJECTION.md)
 
 ## 設計の三層（常に分離する）
 
