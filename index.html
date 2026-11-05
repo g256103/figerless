@@ -9,36 +9,26 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <title>HandPen AI</title>
-    <link rel="stylesheet" href="./styles.css?v=5s-hold" />
+    <link rel="stylesheet" href="./styles.css?v=landscape-modal" />
   </head>
   <body>
-    <div class="app ipad-app">
-      <header class="topbar compact">
+    <div class="app ipad-app landscape-app">
+      <header class="topbar">
         <div class="brand">
           <h1>HandPen AI</h1>
-          <p class="hint" id="headerHint">手を5秒置く → ペン先をタップ → 描画</p>
         </div>
         <div class="status-pills">
           <span id="holdStatus" class="pill">保持: 0.0 / 5.0秒</span>
           <span id="handStatus" class="pill">接触: なし</span>
           <span id="drawStatus" class="pill">描画: OFF</span>
         </div>
+        <button id="btnOpenSettings" class="btn settings-btn" type="button" aria-label="設定">
+          設定
+        </button>
       </header>
-
-      <section class="mode-switch compact">
-        <label class="mode-option">
-          <input type="radio" name="inputMode" value="onscreen" checked />
-          画面手置き
-        </label>
-        <label class="mode-option">
-          <input type="radio" name="inputMode" value="camera" />
-          カメラ比較
-        </label>
-      </section>
 
       <main class="workspace" id="workspace">
         <section class="panel camera-panel" id="cameraPanel" hidden>
-          <div class="panel-title">Camera</div>
           <div class="video-wrap">
             <video id="webcam" playsinline autoplay muted></video>
             <canvas id="overlay"></canvas>
@@ -49,11 +39,12 @@
           <div class="canvas-wrap" id="canvasWrap">
             <canvas id="drawCanvas"></canvas>
             <div id="holdBanner" class="hold-banner">ペン握り形で手を置き、5秒維持</div>
+            <div id="toast" class="toast" hidden></div>
           </div>
         </section>
       </main>
 
-      <section class="controls compact">
+      <nav class="action-dock" aria-label="主要操作">
         <div class="control-row" id="onscreenControls">
           <button id="btnPlaceHand" class="btn primary">やり直す</button>
           <button id="btnToggleDraw" class="btn accent" disabled>描画開始</button>
@@ -66,57 +57,94 @@
           <button id="btnToggleDrawCam" class="btn accent" disabled>描画開始</button>
           <button id="btnClearCam" class="btn" disabled>消去</button>
         </div>
-
-        <div class="control-grid compact-grid">
-          <label id="estimationLabel" hidden>
-            推定方式
-            <select id="estimationMode">
-              <option value="A">A: 指先</option>
-              <option value="B">B: 中間</option>
-              <option value="C" selected>C: 仮想ペン先</option>
-              <option value="D">D: 三指</option>
-            </select>
-          </label>
-
-          <label>
-            平滑化
-            <select id="smoothingMode">
-              <option value="none">なし</option>
-              <option value="ema" selected>EMA</option>
-              <option value="oneEuro">One Euro</option>
-            </select>
-          </label>
-
-          <label>
-            ガイド
-            <select id="guideMode">
-              <option value="none">なし</option>
-              <option value="horizontal" selected>水平</option>
-              <option value="vertical">垂直</option>
-              <option value="diagonal">斜め</option>
-            </select>
-          </label>
-
-          <label id="penLengthLabel" hidden>
-            ペン長 L
-            <input id="penLength" type="range" min="0.02" max="0.30" step="0.01" value="0.12" />
-            <span id="penLengthValue">0.12</span>
-          </label>
-
-          <label>
-            EMA α
-            <input id="emaAlpha" type="range" min="0.05" max="1" step="0.05" value="0.30" />
-            <span id="emaAlphaValue">0.30</span>
-          </label>
-        </div>
-
-        <div id="message" class="message">
-          キャンバスに手を置いて5秒待つと、想定ペン先を設定できます。
-        </div>
-        <div id="metrics" class="metrics">contacts: 0 | tip: — | offset: —</div>
-      </section>
+      </nav>
     </div>
 
-    <script type="module" src="./src/main.js?v=5s-hold"></script>
+    <div id="settingsModal" class="modal" hidden>
+      <div class="modal-backdrop" id="settingsBackdrop"></div>
+      <div
+        class="modal-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="settingsTitle"
+      >
+        <div class="modal-header">
+          <h2 id="settingsTitle">設定</h2>
+          <button id="btnCloseSettings" class="btn" type="button">閉じる</button>
+        </div>
+
+        <div class="modal-body">
+          <section class="modal-section">
+            <h3>入力モード</h3>
+            <div class="mode-switch">
+              <label class="mode-option">
+                <input type="radio" name="inputMode" value="onscreen" checked />
+                画面手置き（横向き推奨）
+              </label>
+              <label class="mode-option">
+                <input type="radio" name="inputMode" value="camera" />
+                カメラ比較
+              </label>
+            </div>
+          </section>
+
+          <section class="modal-section">
+            <h3>描画オプション</h3>
+            <div class="control-grid">
+              <label id="estimationLabel" hidden>
+                推定方式
+                <select id="estimationMode">
+                  <option value="A">A: 指先</option>
+                  <option value="B">B: 中間</option>
+                  <option value="C" selected>C: 仮想ペン先</option>
+                  <option value="D">D: 三指</option>
+                </select>
+              </label>
+
+              <label>
+                平滑化
+                <select id="smoothingMode">
+                  <option value="none">なし</option>
+                  <option value="ema" selected>EMA</option>
+                  <option value="oneEuro">One Euro</option>
+                </select>
+              </label>
+
+              <label>
+                ガイド
+                <select id="guideMode">
+                  <option value="none">なし</option>
+                  <option value="horizontal" selected>水平</option>
+                  <option value="vertical">垂直</option>
+                  <option value="diagonal">斜め</option>
+                </select>
+              </label>
+
+              <label id="penLengthLabel" hidden>
+                ペン長 L
+                <input id="penLength" type="range" min="0.02" max="0.30" step="0.01" value="0.12" />
+                <span id="penLengthValue">0.12</span>
+              </label>
+
+              <label>
+                EMA α
+                <input id="emaAlpha" type="range" min="0.05" max="1" step="0.05" value="0.30" />
+                <span id="emaAlphaValue">0.30</span>
+              </label>
+            </div>
+          </section>
+
+          <section class="modal-section">
+            <h3>状態</h3>
+            <div id="message" class="message">
+              キャンバスに手を置いて5秒待つと、想定ペン先を設定できます。
+            </div>
+            <div id="metrics" class="metrics">contacts: 0 | tip: — | offset: —</div>
+          </section>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.js?v=landscape-modal"></script>
   </body>
 </html>

@@ -37,10 +37,17 @@ const els = {
   metrics: document.getElementById("metrics"),
   holdStatus: document.getElementById("holdStatus"),
   holdBanner: document.getElementById("holdBanner"),
+  toast: document.getElementById("toast"),
   handStatus: document.getElementById("handStatus"),
   drawStatus: document.getElementById("drawStatus"),
+  settingsModal: document.getElementById("settingsModal"),
+  btnOpenSettings: document.getElementById("btnOpenSettings"),
+  btnCloseSettings: document.getElementById("btnCloseSettings"),
+  settingsBackdrop: document.getElementById("settingsBackdrop"),
   modeRadios: document.querySelectorAll('input[name="inputMode"]'),
 };
+
+let toastTimer = 0;
 
 const state = {
   inputMode: "onscreen",
@@ -131,8 +138,27 @@ function updateHoldUi(phase, holdProgress = 0) {
   }
 }
 
-function setMessage(text) {
-  els.message.textContent = text;
+function setMessage(text, { toast = true } = {}) {
+  if (els.message) els.message.textContent = text;
+  if (!toast || !els.toast) return;
+  els.toast.hidden = false;
+  els.toast.textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    els.toast.hidden = true;
+  }, 2200);
+}
+
+function openSettings() {
+  els.settingsModal.hidden = false;
+}
+
+function closeSettings() {
+  els.settingsModal.hidden = true;
+  requestAnimationFrame(() => {
+    syncCanvasSize();
+    requestAnimationFrame(syncCanvasSize);
+  });
 }
 
 function setPill(el, text, on) {
@@ -384,10 +410,18 @@ function loop() {
   state.rafId = requestAnimationFrame(loop);
 }
 
+// Settings modal
+els.btnOpenSettings.addEventListener("click", openSettings);
+els.btnCloseSettings.addEventListener("click", closeSettings);
+els.settingsBackdrop.addEventListener("click", closeSettings);
+
 // Mode switching
 for (const radio of els.modeRadios) {
   radio.addEventListener("change", () => {
-    if (radio.checked) setInputMode(radio.value);
+    if (radio.checked) {
+      setInputMode(radio.value);
+      closeSettings();
+    }
   });
 }
 
